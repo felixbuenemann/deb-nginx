@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 repeat_each(2);
 
@@ -71,6 +71,7 @@ M(http-lua-user-coroutine-create) {
 F(ngx_http_lua_ngx_exec) { println("exec") }
 
 F(ngx_http_lua_ngx_exit) { println("exit") }
+F(ngx_http_lua_ffi_exit) { println("exit") }
 _EOC_
 
 no_shuffle();
@@ -230,12 +231,12 @@ successfully connected to: openresty.org
                 while 1 do
                   local n = g()
                   if n == nil then return end
-                  if math.mod(n, p) ~= 0 then coroutine.yield(n) end
+                  if math.fmod(n, p) ~= 0 then coroutine.yield(n) end
                 end
               end)
             end
 
-            N = 10 
+            N = 10
             x = gen(N)		-- generate primes up to N
             while 1 do
               local n = x()		-- pick a number until done
@@ -276,7 +277,7 @@ GET /lua
                 while 1 do
                   local n = g()
                   if n == nil then return end
-                  if math.mod(n, p) ~= 0 then coroutine.yield(n) end
+                  if math.fmod(n, p) ~= 0 then coroutine.yield(n) end
                 end
               end)
             end
@@ -920,6 +921,272 @@ GET /t
 --- response_body
 status: running
 status: running
+--- no_error_log
+[error]
+
+
+
+=== TEST 23: github issue #208: coroutine as iterator doesn't work
+--- config
+    location = /t {
+        content_by_lua '
+            local say = ngx.say
+            local wrap, yield = coroutine.wrap, coroutine.yield
+
+            local function it(it_state)
+              for i = 1, it_state.i do
+                yield(it_state.path, tostring(i))
+              end
+              return nil
+            end
+
+            local function it_factory(path)
+              local it_state = { i = 10, path = path }
+              return wrap(it), it_state
+            end
+
+            --[[
+            for path, value in it_factory("test") do
+              say(path, value)
+            end
+            ]]
+
+            do
+              local f, s, var = it_factory("test")
+              while true do
+                local path, value = f(s, var)
+                var = path
+                if var == nil then break end
+                say(path, value)
+              end
+            end
+        ';
+    }
+--- request
+    GET /t
+--- more_headers
+Cookie: abc=32
+--- stap2 eval: $::StapScript
+--- response_body
+test1
+test2
+test3
+test4
+test5
+test6
+test7
+test8
+test9
+test10
+--- no_error_log
+[error]
+
+
+
+=== TEST 24: init_by_lua + our own coroutines in content_by_lua
+--- http_config
+    init_by_lua 'return';
+--- config
+    resolver $TEST_NGINX_RESOLVER;
+    location /lua {
+        content_by_lua '
+            function worker(url)
+                local sock = ngx.socket.tcp()
+                local ok, err = sock:connect(url, 80)
+                coroutine.yield()
+                if not ok then
+                    ngx.say("failed to connect to: ", url, " error: ", err)
+                    return
+                end
+                coroutine.yield()
+                ngx.say("successfully connected to: ", url)
+                sock:close()
+            end
+
+            local urls = {
+                "agentzh.org",
+            }
+
+            local ccs = {}
+            for i, url in ipairs(urls) do
+                local cc = coroutine.create(function() worker(url) end)
+                ccs[#ccs+1] = cc
+            end
+
+            while true do
+                if #ccs == 0 then break end
+                local cc = table.remove(ccs, 1)
+                local ok = coroutine.resume(cc)
+                if ok then
+                    ccs[#ccs+1] = cc
+                end
+            end
+
+            ngx.say("*** All Done ***")
+        ';
+    }
+--- request
+GET /lua
+--- response_body
+successfully connected to: agentzh.org
+*** All Done ***
+--- no_error_log
+[error]
+--- timeout: 10
+
+
+
+=== TEST 25: init_by_lua_file + our own coroutines in content_by_lua
+--- http_config
+    init_by_lua_file html/init.lua;
+
+--- config
+    resolver $TEST_NGINX_RESOLVER;
+    location /lua {
+        content_by_lua '
+            function worker(url)
+                local sock = ngx.socket.tcp()
+                local ok, err = sock:connect(url, 80)
+                coroutine.yield()
+                if not ok then
+                    ngx.say("failed to connect to: ", url, " error: ", err)
+                    return
+                end
+                coroutine.yield()
+                ngx.say("successfully connected to: ", url)
+                sock:close()
+            end
+
+            local urls = {
+                "agentzh.org"
+            }
+
+            local ccs = {}
+            for i, url in ipairs(urls) do
+                local cc = coroutine.create(function() worker(url) end)
+                ccs[#ccs+1] = cc
+            end
+
+            while true do
+                if #ccs == 0 then break end
+                local cc = table.remove(ccs, 1)
+                local ok = coroutine.resume(cc)
+                if ok then
+                    ccs[#ccs+1] = cc
+                end
+            end
+
+            ngx.say("*** All Done ***")
+        ';
+    }
+--- user_files
+>>> init.lua
+return
+
+--- request
+GET /lua
+--- response_body
+successfully connected to: agentzh.org
+*** All Done ***
+--- no_error_log
+[error]
+--- timeout: 10
+
+
+
+=== TEST 26: mixing coroutine.* API between init_by_lua and other contexts (github #304) - init_by_lua
+--- http_config
+    init_by_lua '
+          co_wrap = coroutine.wrap
+          co_yield = coroutine.yield
+    ';
+
+--- config
+    location /cotest {
+        content_by_lua '
+            function generator()
+                return co_wrap(function()
+                    co_yield("data")
+                end)
+            end
+
+            local co = generator()
+            local data = co()
+            ngx.say(data)
+        ';
+    }
+
+--- request
+GET /cotest
+--- stap2 eval: $::StapScript
+--- response_body
+data
+--- no_error_log
+[error]
+
+
+
+=== TEST 27: mixing coroutine.* API between init_by_lua and other contexts (github #304) - init_by_lua_file
+--- http_config
+    init_by_lua_file html/init.lua;
+
+--- config
+    location /cotest {
+        content_by_lua '
+            function generator()
+                return co_wrap(function()
+                    co_yield("data")
+                end)
+            end
+
+            local co = generator()
+            local data = co()
+            ngx.say(data)
+        ';
+    }
+
+--- user_files
+>>> init.lua
+co_wrap = coroutine.wrap
+co_yield = coroutine.yield
+
+--- request
+GET /cotest
+--- stap2 eval: $::StapScript
+--- response_body
+data
+--- no_error_log
+[error]
+
+
+
+=== TEST 28: coroutine context collicisions
+--- config
+    location /lua {
+        content_by_lua '
+            local cc, cr, cy = coroutine.create, coroutine.resume, coroutine.yield
+
+            function f()
+                return 3
+            end
+
+            for i = 1, 10 do
+                collectgarbage()
+                local c = cc(f)
+                if coroutine.status(c) == "dead" then
+                    ngx.say("found a dead coroutine")
+                    return
+                end
+                cr(c)
+            end
+            ngx.say("ok")
+        ';
+    }
+--- request
+GET /lua
+--- stap2 eval: $::StapScript
+--- response_body
+ok
 --- no_error_log
 [error]
 

@@ -44,7 +44,7 @@ __DATA__
 --- request
     GET /timer
 --- response_body_like
-^elapsed 0\.0(4[6-9]|5[0-5]) sec\.$
+^elapsed 0\.0(4[6-9]|5[0-6]) sec\.$
 
 
 
@@ -92,4 +92,16 @@ elapsed 0\.0(2[6-9]|3[0-6]) sec\.$
 --- response_body_like
 ^elapsed 0\.0(1[6-9]|2[0-9]) sec\.
 elapsed 0\.0(2[6-9]|3[0-6]) sec\.$
+
+
+
+=== TEST 7: timer without explicit reset
+--- config
+    location = /timer {
+        return 200 "$echo_timer_elapsed";
+    }
+--- request
+    GET /timer
+--- response_body_like chop
+^0(\.0\d*)$
 

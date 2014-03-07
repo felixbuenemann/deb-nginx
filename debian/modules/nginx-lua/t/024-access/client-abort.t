@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 use t::StapThread;
 
 our $GCScript = <<_EOC_;
@@ -83,6 +83,7 @@ lua req cleanup
 delete thread 1
 
 --- timeout: 0.2
+--- wait: 0.1
 --- abort
 --- ignore_response
 --- no_error_log
@@ -200,7 +201,7 @@ bad things happen
 
     location = /sub {
         proxy_ignore_client_abort on;
-        proxy_pass http://www.google.com:1234/;
+        proxy_pass http://agentzh.org:12345/;
     }
 
     location = /sleep {
@@ -241,7 +242,7 @@ client prematurely closed connection
 
     location = /sub {
         proxy_ignore_client_abort off;
-        proxy_pass http://www.google.com:1234/;
+        proxy_pass http://agentzh.org:12345/;
     }
 --- request
 GET /t
@@ -384,6 +385,7 @@ lua check broken conn
 lua req cleanup
 delete thread 1
 
+--- wait: 0.1
 --- timeout: 0.2
 --- abort
 --- ignore_response
@@ -733,6 +735,7 @@ delete thread 2
 lua req cleanup
 
 --- shutdown: 1
+--- wait: 0.1
 --- ignore_response
 --- no_error_log
 [error]

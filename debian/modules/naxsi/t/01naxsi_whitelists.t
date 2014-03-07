@@ -1024,7 +1024,7 @@ location / {
 	 CheckRule "$XSS >= 8" BLOCK;
   	 root $TEST_NGINX_SERVROOT/html/;
          index index.html index.htm;
-	 BasicRule wl:11 "mz:$URL:/|BODY";
+	 BasicRule wl:15 "mz:$URL:/|BODY";
 	 error_page 405 = $uri;
 }
 location /RequestDenied {
@@ -1033,4 +1033,55 @@ location /RequestDenied {
 --- request
 POST /
 
+--- error_code: 200
+=== WL TEST 19.0 : Rule in variable name
+--- user_files
+>>> foobar
+eh yo
+--- http_config
+MainRule id:4242 "str:123" "mz:ARGS" s:BLOCK;
+include /etc/nginx/naxsi_core.rules;
+--- config
+location / {
+	 #LearningMode;
+	 SecRulesEnabled;
+	 DeniedUrl "/RequestDenied";
+	 CheckRule "$SQL >= 8" BLOCK;
+	 CheckRule "$RFI >= 8" BLOCK;
+	 CheckRule "$TRAVERSAL >= 4" BLOCK;
+	 CheckRule "$XSS >= 8" BLOCK;
+  	 root $TEST_NGINX_SERVROOT/html/;
+         index index.html index.htm;
+}
+location /RequestDenied {
+	 return 412;
+}
+--- request
+GET /?a123a=foobar
+--- error_code: 412
+=== WL TEST 19.1 : Rule in variable name (whitelisted)
+--- user_files
+>>> foobar
+eh yo
+--- http_config
+include /etc/nginx/naxsi_core.rules;
+MainRule id:4242 "str:123" "mz:ARGS" s:BLOCK;
+--- config
+location / {
+	 #LearningMode;
+	 SecRulesEnabled;
+	 DeniedUrl "/RequestDenied";
+	 CheckRule "$SQL >= 8" BLOCK;
+	 CheckRule "$RFI >= 8" BLOCK;
+	 CheckRule "$TRAVERSAL >= 4" BLOCK;
+	 CheckRule "$XSS >= 8" BLOCK;
+  	 root $TEST_NGINX_SERVROOT/html/;
+	 BasicRule wl:4242 "mz:ARGS|NAME";
+         index index.html index.htm;
+}
+location /RequestDenied {
+	 return 412;
+}
+--- request
+GET /?a123a=lol
 --- error_code: 200

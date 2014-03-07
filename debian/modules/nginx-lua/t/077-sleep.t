@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 #worker_connections(1014);
 #master_on();
@@ -10,7 +10,7 @@ log_level('debug');
 
 repeat_each(2);
 
-plan tests => repeat_each() * 34;
+plan tests => repeat_each() * 43;
 
 #no_diff();
 #no_long_string();
@@ -211,4 +211,46 @@ hello world
 hello world
 --- no_error_log
 [error]
+
+
+
+=== TEST 9: sleep 0
+--- config
+    location /test {
+        content_by_lua '
+            ngx.update_time()
+            local before = ngx.now()
+            ngx.sleep(0)
+            local now = ngx.now()
+            ngx.say("elapsed: ", now - before)
+        ';
+    }
+--- request
+GET /test
+--- response_body_like chop
+elapsed: 0
+--- error_log
+lua ready to sleep for
+lua sleep timer expired: "/test?"
+lua sleep timer expired: "/test?"
+--- no_error_log
+[error]
+
+
+
+=== TEST 10: ngx.sleep unavailable in log_by_lua
+--- config
+    location /t {
+        echo hello;
+        log_by_lua '
+            ngx.sleep(0.1)
+        ';
+    }
+--- request
+GET /t
+--- response_body
+hello
+--- wait: 0.1
+--- error_log
+API disabled in the context of log_by_lua*
 

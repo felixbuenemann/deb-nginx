@@ -1,7 +1,15 @@
+
+/*
+ * Copyright (C) Xiaozhe Wang (chaoslawful)
+ * Copyright (C) Yichun Zhang (agentzh)
+ */
+
+
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif
 #include "ddebug.h"
+
 
 #include "ngx_http_lua_time.h"
 #include "ngx_http_lua_util.h"
@@ -30,7 +38,7 @@ ngx_http_lua_ngx_today(lua_State *L)
     ngx_gmtime(now + ngx_cached_time->gmtoff * 60, &tm);
 
     ngx_sprintf(buf, "%04d-%02d-%02d", tm.ngx_tm_year, tm.ngx_tm_mon,
-            tm.ngx_tm_mday);
+                tm.ngx_tm_mday);
 
     lua_pushlstring(L, (char *) buf, sizeof(buf));
 
@@ -48,8 +56,8 @@ ngx_http_lua_ngx_localtime(lua_State *L)
     ngx_gmtime(ngx_time() + ngx_cached_time->gmtoff * 60, &tm);
 
     ngx_sprintf(buf, "%04d-%02d-%02d %02d:%02d:%02d", tm.ngx_tm_year,
-            tm.ngx_tm_mon, tm.ngx_tm_mday, tm.ngx_tm_hour, tm.ngx_tm_min,
-            tm.ngx_tm_sec);
+                tm.ngx_tm_mon, tm.ngx_tm_mday, tm.ngx_tm_hour, tm.ngx_tm_min,
+                tm.ngx_tm_sec);
 
     lua_pushlstring(L, (char *) buf, sizeof(buf));
 
@@ -90,15 +98,14 @@ ngx_http_lua_ngx_update_time(lua_State *L)
 static int
 ngx_http_lua_ngx_utctime(lua_State *L)
 {
-    ngx_tm_t                 tm;
-
-    u_char buf[sizeof("2010-11-19 20:56:31") - 1];
+    ngx_tm_t       tm;
+    u_char         buf[sizeof("2010-11-19 20:56:31") - 1];
 
     ngx_gmtime(ngx_time(), &tm);
 
     ngx_sprintf(buf, "%04d-%02d-%02d %02d:%02d:%02d", tm.ngx_tm_year,
-            tm.ngx_tm_mon, tm.ngx_tm_mday, tm.ngx_tm_hour, tm.ngx_tm_min,
-            tm.ngx_tm_sec);
+                tm.ngx_tm_mon, tm.ngx_tm_mday, tm.ngx_tm_hour, tm.ngx_tm_min,
+                tm.ngx_tm_sec);
 
     lua_pushlstring(L, (char *) buf, sizeof(buf));
 
@@ -182,11 +189,7 @@ ngx_http_lua_ngx_req_start_time(lua_State *L)
 {
     ngx_http_request_t  *r;
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "no request found");
     }
@@ -244,3 +247,4 @@ ngx_http_lua_inject_req_time_api(lua_State *L)
     lua_setfield(L, -2, "start_time");
 }
 
+/* vi:set ft=c ts=4 sw=4 et fdm=marker: */

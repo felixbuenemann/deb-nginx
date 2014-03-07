@@ -80,16 +80,40 @@ strfaststr(unsigned char *haystack, unsigned int hl,
   return (NULL);
 }
 
+/* unescape routine, returns number of nullbytes present */
+int naxsi_unescape(ngx_str_t *str) {
+  u_char *dst, *src;
+  u_int nullbytes = 0, bad = 0, i;
+  
+  dst = str->data;
+  src = str->data;
+      
+  bad = naxsi_unescape_uri(&src, &dst,
+			   str->len, 0);      
+  str->len =  src - str->data;
+  //tmp hack fix, avoid %00 & co (null byte) encoding :p
+  for (i = 0; i < str->len; i++)
+    if (str->data[i] == 0x0)
+      {
+	nullbytes++;
+	str->data[i] = '0';
+      }
+  return (nullbytes+bad);
+}
+
+
 /*
 ** Patched ngx_unescape_uri : 
 ** The original one does not care if the character following % is in valid range.
 ** For example, with the original one :
 ** '%uff' -> 'uff'
 */
-void
+int
 naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type)
 {
     u_char  *d, *s, ch, c, decoded;
+    int bad = 0;
+    
     enum {
         sw_usual = 0,
         sw_quoted,
@@ -124,13 +148,13 @@ naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type)
             break;
 
         case sw_quoted:
-
+	  
             if (ch >= '0' && ch <= '9') {
                 decoded = (u_char) (ch - '0');
                 state = sw_quoted_second;
                 break;
             }
-
+	    
             c = (u_char) (ch | 0x20);
             if (c >= 'a' && c <= 'f') {
                 decoded = (u_char) (c - 'a' + 10);
@@ -139,11 +163,10 @@ naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type)
             }
 
             /* the invalid quoted character */
-
+	    bad++;
             state = sw_usual;
 	    *d++ = '%';
             *d++ = ch;
-
             break;
 
         case sw_quoted_second:
@@ -168,7 +191,7 @@ naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type)
 
                 break;
             }
-
+	    
             c = (u_char) (ch | 0x20);
             if (c >= 'a' && c <= 'f') {
                 ch = (u_char) ((decoded << 4) + c - 'a' + 10);
@@ -202,10 +225,14 @@ naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type)
 
                 break;
             }
-	    
-            /* the invalid quoted character */
+	    /* the invalid quoted character */
+	    /* as it happened in the 2nd part of quoted character, 
+	       we need to restore the decoded char as well. */
+	    *d++ = '%';
+	    *d++ = (0 >= decoded && decoded < 10) ? decoded + '0' : 
+	      decoded - 10 + 'a';
 	    *d++ = ch;
-
+	    bad++;
             break;
         }
     }
@@ -214,6 +241,8 @@ done:
 
     *dst = d;
     *src = s;
+    
+    return (bad);
 }
 
 //#define whitelist_heavy_debug
@@ -259,15 +288,16 @@ ngx_http_wlr_merge(ngx_conf_t *cf, ngx_http_whitelist_rule_t *father_wl,
   
   if (!father_wl->ids)
     {
-      father_wl->ids = ngx_array_create(cf->pool, 3, sizeof(int));
+      father_wl->ids = ngx_array_create(cf->pool, 3, sizeof(ngx_int_t));
       if (!father_wl->ids)
 	return (NGX_ERROR);
     }
-  for (i = 0; curr->wl_id[i] >= 0 ; i++) {
+  for (i = 0; i < curr->wlid_array->nelts; i++) {
     tmp_ptr = ngx_array_push(father_wl->ids);
     if (!tmp_ptr)
       return (NGX_ERROR);
-    *tmp_ptr = curr->wl_id[i];
+    *tmp_ptr = ((ngx_int_t *)curr->wlid_array->elts)[i];
+    //*tmp_ptr = curr->wlid_array->elts[i];
   }
   return (NGX_OK);
 }
@@ -454,7 +484,7 @@ ngx_http_wlr_finalize_hashtables(ngx_conf_t *cf, ngx_http_dummy_loc_conf_t  *dlc
 #ifdef whitelist_heavy_debug
   ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, 
 		     "nb items : body:%d headers:%d uri:%d get:%d",
-		     body_sz, headers_sz, uri_sz, get_sz);
+	     body_sz, headers_sz, uri_sz, get_sz);
 #endif
 
   if (get_sz)
@@ -483,6 +513,8 @@ ngx_http_wlr_finalize_hashtables(ngx_conf_t *cf, ngx_http_dummy_loc_conf_t  *dlc
     default:
       return (NGX_ERROR);
     }
+    if (!arr_node)
+      return (NGX_ERROR);
     ngx_memset(arr_node, 0, sizeof(ngx_hash_key_t));
     arr_node->key = *(((ngx_http_whitelist_rule_t *) dlc->tmp_wlr->elts)[i].name);
     arr_node->key_hash = ngx_hash_key_lc(((ngx_http_whitelist_rule_t *) dlc->tmp_wlr->elts)[i].name->data, 
@@ -583,6 +615,7 @@ ngx_http_wlr_finalize_hashtables(ngx_conf_t *cf, ngx_http_dummy_loc_conf_t  *dlc
 ** as well as rules targetting the same argument name / zone.
 */
 
+//#define rx_matchzone_debug
 //#define whitelist_heavy_debug
 ngx_int_t
 ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc, 
@@ -644,12 +677,68 @@ ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc,
 	  ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "whitelists has no target uri.");
 	return (NGX_ERROR);
       }
+    curr_r->br->zone = zone;
     /*
-      ngx_http_whitelist_rule_t *
-      ngx_http_wlr_find(ngx_conf_t *cf, ngx_http_dummy_loc_conf_t *dlc,
-      ngx_http_rule_t *curr, int zone, int uri_idx,
-      int name_idx, char **fullname) {
+    ** Handle regular-expression-matchzone rules :
+    ** Store them in a separate linked list, parsed
+    ** at runtime.
+    */
+    if (curr_r->br->rx_mz == 1) {
+#ifdef rx_matchzone_debug
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "Found WL is RX mz");
+      if (name_idx != -1)
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "whitelist target name : %V", 
+			   &(custloc_array(curr_r->br->custom_locations->elts)[name_idx].target));
+      else
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "whitelist has no target name.");
+      if (uri_idx != -1)
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "whitelist target uri : %V", 
+			   &(custloc_array(curr_r->br->custom_locations->elts)[uri_idx].target));
+      else
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "whitelists has no target uri.");
+#endif
+      if (!dlc->rxmz_wlr) {
+	dlc->rxmz_wlr = ngx_array_create(cf->pool, 1,
+					 sizeof(ngx_http_rule_t *));
+	if (!dlc->rxmz_wlr) return (NGX_ERROR);
+      }
+      ngx_http_rule_t **rptr;
+      ngx_regex_compile_t *rgc;
+      if (name_idx != -1) {
+	custloc_array(curr_r->br->custom_locations->elts)[name_idx].target_rx = 
+	  ngx_pcalloc(cf->pool, sizeof(ngx_regex_compile_t));
+	rgc = custloc_array(curr_r->br->custom_locations->elts)[name_idx].target_rx;
+	rgc->options = PCRE_CASELESS|PCRE_MULTILINE;
+	rgc->pattern = custloc_array(curr_r->br->custom_locations->elts)[name_idx].target;
+	rgc->pool = cf->pool;
+	rgc->err.len = 0;
+	rgc->err.data = NULL;
+	//custloc_array(curr_r->br->custom_locations->elts)[name_idx].target;
+	if (ngx_regex_compile(rgc) != NGX_OK)
+	  return (NGX_ERROR);
+      }
+      if (uri_idx != -1) {
+	custloc_array(curr_r->br->custom_locations->elts)[uri_idx].target_rx = 
+	  ngx_pcalloc(cf->pool, sizeof(ngx_regex_compile_t));
+	rgc = custloc_array(curr_r->br->custom_locations->elts)[uri_idx].target_rx;
+	rgc->options = PCRE_CASELESS|PCRE_MULTILINE;
+	rgc->pattern = custloc_array(curr_r->br->custom_locations->elts)[uri_idx].target;
+	rgc->pool = cf->pool;
+	rgc->err.len = 0;
+	rgc->err.data = NULL;
+	//custloc_array(curr_r->br->custom_locations->elts)[name_idx].target;
+	if (ngx_regex_compile(rgc) != NGX_OK)
+	  return (NGX_ERROR);
+      }
       
+      rptr = ngx_array_push(dlc->rxmz_wlr);
+      if (!rptr)
+	return (NGX_ERROR);
+      *rptr = curr_r;
+      continue;
+    }
+    /*
+    ** Handle static match-zones for hashtables
     */
     father_wlr = ngx_http_wlr_find(cf, dlc, curr_r, zone, uri_idx, name_idx, (char **) &fullname);
     if (!father_wlr) {
@@ -675,7 +764,7 @@ ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc,
       if (uri_idx != -1 && name_idx == -1)
 	father_wlr->uri_only = 1;
       /* If target_name is present in son, report it. */
-      if (curr_r->br && curr_r->br->target_name)
+      if (curr_r->br->target_name)
         father_wlr->target_name = curr_r->br->target_name; 
     }
     /*merges the two whitelist rules together, including custom_locations. */
@@ -690,3 +779,96 @@ ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc,
   return (NGX_OK);
 }
 
+/*
+  function used for intensive log if dynamic flag is set.
+  Output format :
+  ip=<ip>&server=<server>&uri=<uri>&id=<id>&zone=<zone>&content=<content>
+ */
+
+static char *dummy_match_zones[] = {
+  "HEADERS",
+  "URL",
+  "ARGS",
+  "BODY",
+  "FILE_EXT",
+  "UNKNOWN",
+  NULL
+};
+
+
+void naxsi_log_offending(ngx_str_t *name, ngx_str_t *val, ngx_http_request_t *req, ngx_http_rule_t *rule,
+			 enum DUMMY_MATCH_ZONE	zone) {
+  ngx_str_t			tmp_uri, tmp_val, tmp_name;
+  ngx_str_t			empty=ngx_string("");
+  
+  //encode uri
+  tmp_uri.len = req->uri.len + (2 * ngx_escape_uri(NULL, req->uri.data, req->uri.len,
+						   NGX_ESCAPE_ARGS));
+  tmp_uri.data = ngx_pcalloc(req->pool, tmp_uri.len+1);
+  if (tmp_uri.data == NULL)
+    return ;
+  ngx_escape_uri(tmp_uri.data, req->uri.data, req->uri.len, NGX_ESCAPE_ARGS);
+  //encode val
+  if (val->len <= 0)
+    tmp_val = empty;
+  else {
+    tmp_val.len = val->len + (2 * ngx_escape_uri(NULL, val->data, val->len,
+						 NGX_ESCAPE_ARGS));
+    tmp_val.data = ngx_pcalloc(req->pool, tmp_val.len+1);
+    if (tmp_val.data == NULL)
+      return ;
+    ngx_escape_uri(tmp_val.data, val->data, val->len, NGX_ESCAPE_ARGS);
+  }
+  //encode name
+  if (name->len <= 0)
+    tmp_name = empty;
+  else {
+    tmp_name.len = name->len + (2 * ngx_escape_uri(NULL, name->data, name->len,
+						   NGX_ESCAPE_ARGS));
+    tmp_name.data = ngx_pcalloc(req->pool, tmp_name.len+1);
+    if (tmp_name.data == NULL)
+      return ;
+    ngx_escape_uri(tmp_name.data, name->data, name->len, NGX_ESCAPE_ARGS);
+  }
+  
+  ngx_log_error(NGX_LOG_ERR, req->connection->log, 0, 
+		"NAXSI_EXLOG: ip=%V&server=%V&uri=%V&id=%d&zone=%s&var_name=%V&content=%V", 
+		&(req->connection->addr_text), &(req->headers_in.server),
+		&(tmp_uri), rule->rule_id, dummy_match_zones[zone], &(tmp_name), &(tmp_val));
+  
+  if (tmp_val.len > 0)
+    ngx_pfree(req->pool, tmp_val.data);
+  if (tmp_name.len > 0)
+    ngx_pfree(req->pool, tmp_name.data);
+  if (tmp_uri.len > 0)
+    ngx_pfree(req->pool, tmp_uri.data);
+  
+}
+
+
+/*
+** Used to check matched rule ID against wl IDs
+** Returns 1 if rule is whitelisted, 0 else
+*/
+int nx_check_ids(ngx_int_t match_id, ngx_array_t *wl_ids) {
+  
+  int negative=0;
+  unsigned int i;
+  
+  for (i = 0; i < wl_ids->nelts; i++) {
+    if ( ((ngx_int_t *)wl_ids->elts)[i] == match_id)
+      return (1);
+    if ( ((ngx_int_t *)wl_ids->elts)[i] == 0)
+      return (1);
+    /* manage negative whitelists, except for internal rules */
+    if ( ((ngx_int_t *)wl_ids->elts)[i] < 0 && match_id >= 1000) {
+      negative = 1;
+      /* negative wl excludes this one.*/
+      if (match_id == -((ngx_int_t *)wl_ids->elts)[i]) {
+	return (0);
+      }
+    }
+  }
+  if (negative == 1) return (1);
+  return (0);
+}

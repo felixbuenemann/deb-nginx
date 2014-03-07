@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 repeat_each(2);
 
@@ -28,7 +28,8 @@ __DATA__
         ';
     }
 --- request
-    GET /t
+    POST /t
+--- more_headers: Content-Length: 1024
 --- response_body_like: 500 Internal Server Error
 --- error_code: 500
 --- error_log
@@ -45,7 +46,8 @@ bad argument #1 to 'receive' (table expected, got string)
         ';
     }
 --- request
-    GET /t
+    POST /t
+--- more_headers: Content-Length: 1024
 --- response_body_like: 500 Internal Server Error
 --- error_code: 500
 --- error_log

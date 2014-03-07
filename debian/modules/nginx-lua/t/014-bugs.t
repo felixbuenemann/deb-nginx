@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 #worker_connections(1014);
 #master_on();
@@ -9,7 +9,7 @@ log_level('debug');
 
 repeat_each(3);
 
-plan tests => repeat_each() * (blocks() * 2 + 21);
+plan tests => repeat_each() * (blocks() * 2 + 25);
 
 our $HtmlDir = html_dir;
 #warn $html_dir;
@@ -18,6 +18,7 @@ our $HtmlDir = html_dir;
 #no_long_string();
 
 $ENV{TEST_NGINX_MEMCACHED_PORT} ||= 11211;
+$ENV{TEST_NGINX_RESOLVER} ||= '8.8.8.8';
 
 #no_shuffle();
 no_long_string();
@@ -698,8 +699,8 @@ Content-Type: application/json; charset=utf-8
 === TEST 32: hang on upstream_next (from kindy)
 --- http_config
     upstream xx {
-        server 127.0.0.1:$TEST_NGINX_SERVER_PORT;
-        server 127.0.0.1:$TEST_NGINX_SERVER_PORT;
+        server 127.0.0.1:$TEST_NGINX_SERVER_PORT max_fails=5;
+        server 127.0.0.1:$TEST_NGINX_SERVER_PORT max_fails=5;
     }
 
     server {
@@ -710,11 +711,8 @@ Content-Type: application/json; charset=utf-8
     }
 --- config
     location = /t {
+        proxy_next_upstream off;
         proxy_pass http://xx;
-    }
-
-    location = /bad {
-        return 444;
     }
 --- request
     GET /t
@@ -723,4 +721,125 @@ Content-Type: application/json; charset=utf-8
 --- error_code: 502
 --- error_log
 upstream prematurely closed connection while reading response header from upstream
+
+
+
+=== TEST 33: last_in_chain is set properly in subrequests
+--- config
+    location = /sub {
+        echo hello;
+        body_filter_by_lua '
+            local eof = ngx.arg[2]
+            if eof then
+                print("eof found in body stream")
+            end
+        ';
+    }
+
+    location = /main {
+        echo_location /sub;
+    }
+
+--- request
+    GET /main
+--- response_body
+hello
+--- log_level: notice
+--- error_log
+eof found in body stream
+
+
+
+=== TEST 34: testing a segfault when using ngx_poll_module + ngx_resolver
+See more details here: http://mailman.nginx.org/pipermail/nginx-devel/2013-January/003275.html
+--- config
+    location /t {
+        set $myserver nginx.org;
+        proxy_pass http://$myserver/;
+        resolver 127.0.0.1;
+    }
+--- request
+    GET /t
+--- ignore_response
+--- abort
+--- timeout: 0.3
+--- log_level: notice
+--- no_error_log
+[alert]
+--- error_log eval
+qr/recv\(\) failed \(\d+: Connection refused\) while resolving/
+
+
+
+=== TEST 35: github issue #218: ngx.location.capture hangs when querying a remote host that does not exist or is really slow to respond
+--- config
+    set $myurl "https://not-exist.agentzh.org";
+    location /toto {
+        content_by_lua '
+                local proxyUrl = "/myproxy/entity"
+                local res = ngx.location.capture( proxyUrl,  { method = ngx.HTTP_GET })
+                ngx.say("Hello, ", res.status)
+            ';
+    }
+    location ~ /myproxy {
+
+        rewrite    ^/myproxy/(.*)  /$1  break;
+        resolver_timeout 1s;
+        #resolver 172.16.0.23; #  AWS DNS resolver address is the same in all regions - 172.16.0.23
+        resolver 8.8.8.8;
+        proxy_read_timeout 1s;
+        proxy_send_timeout 1s;
+        proxy_connect_timeout 1s;
+        proxy_pass $myurl:443;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length 0;
+        proxy_set_header  Accept-Encoding  "";
+    }
+
+--- request
+GET /toto
+
+--- stap2
+F(ngx_http_lua_post_subrequest) {
+    println("lua post subrequest")
+    print_ubacktrace()
+}
+
+--- response_body
+Hello, 502
+
+--- error_log
+not-exist.agentzh.org could not be resolved
+--- timeout: 3
+
+
+
+=== TEST 36: line comments in the last line of the inlined Lua code
+--- config
+    location /lua {
+        content_by_lua 'ngx.say("ok") -- blah';
+    }
+--- request
+GET /lua
+--- response_body
+ok
+--- no_error_log
+[error]
+
+
+
+=== TEST 37: resolving names with a trailing dot
+--- http_config eval
+    "lua_package_path '$::HtmlDir/?.lua;./?.lua';"
+--- config
+    location /t {
+        resolver $TEST_NGINX_RESOLVER;
+        set $myhost 'agentzh.org.';
+        proxy_pass http://$myhost/misc/.vimrc;
+    }
+--- request
+GET /t
+--- response_body_like: An example for a vimrc file
+--- no_error_log
+[error]
 

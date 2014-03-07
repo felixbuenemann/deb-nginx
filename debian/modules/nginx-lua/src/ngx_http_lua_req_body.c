@@ -1,3 +1,9 @@
+
+/*
+ * Copyright (C) Yichun Zhang (agentzh)
+ */
+
+
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif
@@ -74,11 +80,7 @@ ngx_http_lua_ngx_req_read_body(lua_State *L)
         return luaL_error(L, "expecting 0 arguments but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "request object not found");
     }
@@ -112,18 +114,35 @@ ngx_http_lua_ngx_req_read_body(lua_State *L)
 
     rc = ngx_http_read_client_request_body(r, ngx_http_lua_req_body_post_read);
 
+#if (nginx_version < 1002006) ||                                             \
+        (nginx_version >= 1003000 && nginx_version < 1003009)
     r->main->count--;
+#endif
 
-    if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
-        return luaL_error(L, "failed to read request body");
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        ctx->exit_code = rc;
+        ctx->exited = 1;
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "http read client request body returned error code %i, "
+                       "exitting now", rc);
+
+        return lua_yield(L, 0);
     }
+
+#if (nginx_version >= 1002006 && nginx_version < 1003000) ||                 \
+        nginx_version >= 1003009
+    r->main->count--;
+    dd("decrement r->main->count: %d", (int) r->main->count);
+#endif
 
     if (rc == NGX_AGAIN) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                "lua read buffered request body requires I/O interruptions");
+                       "lua read buffered request body requires I/O "
+                       "interruptions");
 
         ctx->waiting_more_body = 1;
-        ctx->req_body_reader_co_ctx = coctx;
+        ctx->downstream_co_ctx = coctx;
 
         coctx->cleanup = ngx_http_lua_req_body_cleanup;
         coctx->data = r;
@@ -134,7 +153,7 @@ ngx_http_lua_ngx_req_read_body(lua_State *L)
     /* rc == NGX_OK */
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-            "lua has read buffered request body in a single run");
+                   "lua has read buffered request body in a single run");
 
     return 0;
 }
@@ -148,15 +167,15 @@ ngx_http_lua_req_body_post_read(ngx_http_request_t *r)
 
     ngx_http_lua_loc_conf_t             *llcf;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "lua req body post read");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "lua req body post read, c:%ud", r->main->count);
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 
     if (ctx->waiting_more_body) {
         ctx->waiting_more_body = 0;
 
-        coctx = ctx->req_body_reader_co_ctx;
+        coctx = ctx->downstream_co_ctx;
         ctx->cur_co_ctx = coctx;
 
         coctx->cleanup = NULL;
@@ -194,14 +213,12 @@ ngx_http_lua_ngx_req_discard_body(lua_State *L)
         return luaL_error(L, "expecting 0 arguments but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "request object not found");
     }
+
+    ngx_http_lua_check_fake_request(L, r);
 
     rc = ngx_http_discard_request_body(r);
 
@@ -229,14 +246,12 @@ ngx_http_lua_ngx_req_get_body_data(lua_State *L)
         return luaL_error(L, "expecting 0 arguments but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "request object not found");
     }
+
+    ngx_http_lua_check_fake_request(L, r);
 
     if (r->request_body == NULL
         || r->request_body->temp_file
@@ -265,6 +280,7 @@ ngx_http_lua_ngx_req_get_body_data(lua_State *L)
     len = 0;
 
     for (; cl; cl = cl->next) {
+        dd("body chunk len: %d", (int) ngx_buf_size(cl->buf));
         len += cl->buf->last - cl->buf->pos;
     }
 
@@ -297,14 +313,12 @@ ngx_http_lua_ngx_req_get_body_file(lua_State *L)
         return luaL_error(L, "expecting 0 arguments but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "request object not found");
     }
+
+    ngx_http_lua_check_fake_request(L, r);
 
     if (r->request_body == NULL || r->request_body->temp_file == NULL) {
         lua_pushnil(L);
@@ -312,17 +326,16 @@ ngx_http_lua_ngx_req_get_body_file(lua_State *L)
     }
 
     dd("XXX file directio: %u, f:%u, m:%u, t:%u, end - pos %d, size %d",
-            r->request_body->temp_file->file.directio,
-            r->request_body->bufs->buf->in_file,
-            r->request_body->bufs->buf->memory,
-            r->request_body->bufs->buf->temporary,
-            (int) (r->request_body->bufs->buf->end -
-                r->request_body->bufs->buf->pos),
-            (int) ngx_buf_size(r->request_body->bufs->buf)
-            );
+       r->request_body->temp_file->file.directio,
+       r->request_body->bufs->buf->in_file,
+       r->request_body->bufs->buf->memory,
+       r->request_body->bufs->buf->temporary,
+       (int) (r->request_body->bufs->buf->end -
+       r->request_body->bufs->buf->pos),
+       (int) ngx_buf_size(r->request_body->bufs->buf));
 
     lua_pushlstring(L, (char *) r->request_body->temp_file->file.name.data,
-                       r->request_body->temp_file->file.name.len);
+                    r->request_body->temp_file->file.name.len);
     return 1;
 }
 
@@ -350,34 +363,22 @@ ngx_http_lua_ngx_req_set_body_data(lua_State *L)
 
     body.data = (u_char *) luaL_checklstring(L, 1, &body.len);
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
         return luaL_error(L, "request object not found");
     }
 
-    if (r->request_body == NULL) {
+    ngx_http_lua_check_fake_request(L, r);
 
-#if 1
-        rc = ngx_http_discard_request_body(r);
-        if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
-            return luaL_error(L, "failed to discard request body");
-        }
-#endif
-
-        rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
-        if (rb == NULL) {
-            return luaL_error(L, "out of memory");
-        }
-
-        r->request_body = rb;
-
-    } else {
-        rb = r->request_body;
+    if (r->discard_body) {
+        return luaL_error(L, "request body already discarded asynchronously");
     }
+
+    if (r->request_body == NULL) {
+        return luaL_error(L, "request body not read yet");
+    }
+
+    rb = r->request_body;
 
     tag = (ngx_buf_tag_t) &ngx_http_lua_module;
 
@@ -387,13 +388,13 @@ ngx_http_lua_ngx_req_set_body_data(lua_State *L)
         if (tf->file.fd != NGX_INVALID_FILE) {
 
             dd("cleaning temp file %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
 
             ngx_http_lua_pool_cleanup_file(r->pool, tf->file.fd);
             tf->file.fd = NGX_INVALID_FILE;
 
             dd("temp file cleaned: %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
         }
 
         rb->temp_file = NULL;
@@ -407,7 +408,7 @@ ngx_http_lua_ngx_req_set_body_data(lua_State *L)
                 if (cl->buf->tag == tag && cl->buf->temporary) {
 
                     dd("free old request body buffer: size:%d",
-                        (int) ngx_buf_size(cl->buf));
+                       (int) ngx_buf_size(cl->buf));
 
                     ngx_pfree(r->pool, cl->buf->start);
                     cl->buf->tag = (ngx_buf_tag_t) NULL;
@@ -428,7 +429,7 @@ ngx_http_lua_ngx_req_set_body_data(lua_State *L)
         for (cl = rb->bufs; cl; cl = cl->next) {
             if (cl->buf->tag == tag && cl->buf->temporary) {
                 dd("free old request body buffer: size:%d",
-                    (int) ngx_buf_size(cl->buf));
+                   (int) ngx_buf_size(cl->buf));
 
                 ngx_pfree(r->pool, cl->buf->start);
                 cl->buf->tag = (ngx_buf_tag_t) NULL;
@@ -483,7 +484,7 @@ set_header:
     value.data[value.len] = '\0';
 
     dd("setting request Content-Length to %.*s (%d)",
-            (int) value.len, value.data, (int) body.len);
+       (int) value.len, value.data, (int) body.len);
 
     r->headers_in.content_length_n = body.len;
 
@@ -498,7 +499,7 @@ set_header:
         rc = ngx_http_lua_set_input_header(r, key, value, 1 /* override */);
         if (rc != NGX_OK) {
             return luaL_error(L, "failed to reset the Content-Length "
-                    "input header");
+                              "input header");
         }
     }
 
@@ -512,7 +513,6 @@ ngx_http_lua_ngx_req_init_body(lua_State *L)
     ngx_http_request_t          *r;
     int                          n;
     ngx_http_request_body_t     *rb;
-    ngx_int_t                    rc;
     size_t                       size;
     lua_Integer                  num;
 #if 1
@@ -526,10 +526,20 @@ ngx_http_lua_ngx_req_init_body(lua_State *L)
         return luaL_error(L, "expecting 0 or 1 argument but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
+    r = ngx_http_lua_get_req(L);
+    if (r == NULL) {
+        return luaL_error(L, "no request found");
+    }
+
+    ngx_http_lua_check_fake_request(L, r);
+
+    if (r->discard_body) {
+        return luaL_error(L, "request body already discarded asynchronously");
+    }
+
+    if (r->request_body == NULL) {
+        return luaL_error(L, "request body not read yet");
+    }
 
     if (n == 1) {
         num = luaL_checkinteger(L, 1);
@@ -548,29 +558,11 @@ ngx_http_lua_ngx_req_init_body(lua_State *L)
 
         /* avoid allocating an unnecessary large buffer */
         if (size > (size_t) r->headers_in.content_length_n) {
-            size = r->headers_in.content_length_n;
+            size = (size_t) r->headers_in.content_length_n;
         }
     }
 
-    if (r->request_body == NULL) {
-
-#if 1
-        rc = ngx_http_discard_request_body(r);
-        if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
-            return luaL_error(L, "failed to discard request body");
-        }
-#endif
-
-        rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
-        if (rb == NULL) {
-            return luaL_error(L, "out of memory");
-        }
-
-        r->request_body = rb;
-
-    } else {
-        rb = r->request_body;
-    }
+    rb = r->request_body;
 
 #if 1
     tf = rb->temp_file;
@@ -579,7 +571,7 @@ ngx_http_lua_ngx_req_init_body(lua_State *L)
         if (tf->file.fd != NGX_INVALID_FILE) {
 
             dd("cleaning temp file %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
 
             ngx_http_lua_pool_cleanup_file(r->pool, tf->file.fd);
 
@@ -588,7 +580,7 @@ ngx_http_lua_ngx_req_init_body(lua_State *L)
             tf->file.fd = NGX_INVALID_FILE;
 
             dd("temp file cleaned: %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
         }
 
         rb->temp_file = NULL;
@@ -634,10 +626,12 @@ ngx_http_lua_ngx_req_append_body(lua_State *L)
 
     body.data = (u_char *) luaL_checklstring(L, 1, &body.len);
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
+    r = ngx_http_lua_get_req(L);
+    if (r == NULL) {
+        return luaL_error(L, "no request found");
+    }
+
+    ngx_http_lua_check_fake_request(L, r);
 
     if (r->request_body == NULL
         || r->request_body->buf == NULL
@@ -695,14 +689,17 @@ ngx_http_lua_ngx_req_body_finish(lua_State *L)
         return luaL_error(L, "expecting 0 argument but seen %d", n);
     }
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
+    r = ngx_http_lua_get_req(L);
+    if (r == NULL) {
+        return luaL_error(L, "no request found");
+    }
 
-    if (r->request_body == NULL || r->request_body->buf == NULL
-        || r->request_body->bufs == NULL) {
+    ngx_http_lua_check_fake_request(L, r);
 
+    if (r->request_body == NULL
+        || r->request_body->buf == NULL
+        || r->request_body->bufs == NULL)
+    {
         return luaL_error(L, "request_body not initalized");
     }
 
@@ -741,7 +738,7 @@ ngx_http_lua_ngx_req_body_finish(lua_State *L)
         return luaL_error(L, "out of memory");
     }
 
-    size = r->headers_in.content_length_n;
+    size = (size_t) r->headers_in.content_length_n;
 
     value.len = ngx_sprintf(value.data, "%uz", size) - value.data;
     value.data[value.len] = '\0';
@@ -760,7 +757,7 @@ ngx_http_lua_ngx_req_body_finish(lua_State *L)
         rc = ngx_http_lua_set_input_header(r, key, value, 1 /* override */);
         if (rc != NGX_OK) {
             return luaL_error(L, "failed to reset the Content-Length "
-                    "input header");
+                              "input header");
         }
     }
 
@@ -820,13 +817,19 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
 
     p = (u_char *) luaL_checklstring(L, 1, &name.len);
 
-    lua_pushlightuserdata(L, &ngx_http_lua_request_key);
-    lua_rawget(L, LUA_GLOBALSINDEX);
-    r = lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
+    r = ngx_http_lua_get_req(L);
     if (r == NULL) {
-        return luaL_error(L, "request object not found");
+        return luaL_error(L, "no request found");
+    }
+
+    ngx_http_lua_check_fake_request(L, r);
+
+    if (r->discard_body) {
+        return luaL_error(L, "request body already discarded asynchronously");
+    }
+
+    if (r->request_body == NULL) {
+        return luaL_error(L, "request body not read yet");
     }
 
     name.data = ngx_palloc(r->pool, name.len + 1);
@@ -847,25 +850,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
 
     dd("clean: %d", (int) clean);
 
-    if (r->request_body == NULL) {
-
-#if 1
-        rc = ngx_http_discard_request_body(r);
-        if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
-            return luaL_error(L, "failed to discard request body");
-        }
-#endif
-
-        rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
-        if (rb == NULL) {
-            return luaL_error(L, "out of memory");
-        }
-
-        r->request_body = rb;
-
-    } else {
-        rb = r->request_body;
-    }
+    rb = r->request_body;
 
     /* clean up existing r->request_body->bufs (if any) */
 
@@ -877,7 +862,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
         for (cl = rb->bufs; cl; cl = cl->next) {
             if (cl->buf->tag == tag && cl->buf->temporary) {
                 dd("free old request body buffer: size:%d",
-                        (int) ngx_buf_size(cl->buf));
+                   (int) ngx_buf_size(cl->buf));
 
                 ngx_pfree(r->pool, cl->buf->start);
                 cl->buf->tag = (ngx_buf_tag_t) NULL;
@@ -891,6 +876,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
         ngx_memzero(b, sizeof(ngx_buf_t));
 
         b->tag = tag;
+        rb->buf = NULL;
 
     } else {
 
@@ -910,7 +896,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
         b->tag = tag;
 
         rb->bufs->buf = b;
-        rb->buf = b;
+        rb->buf = NULL;
     }
 
     b->last_in_chain = 1;
@@ -923,7 +909,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
         if (tf->file.fd != NGX_INVALID_FILE) {
 
             dd("cleaning temp file %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
 
             ngx_http_lua_pool_cleanup_file(r->pool, tf->file.fd);
 
@@ -932,7 +918,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
             tf->file.fd = NGX_INVALID_FILE;
 
             dd("temp file cleaned: %.*s", (int) tf->file.name.len,
-                    tf->file.name.data);
+               tf->file.name.data);
         }
 
     } else {
@@ -950,6 +936,8 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
 
     ngx_memzero(&of, sizeof(ngx_open_file_info_t));
 
+    of.directio = NGX_OPEN_FILE_DIRECTIO_OFF;
+
     if (ngx_http_lua_open_and_stat_file(name.data, &of, r->connection->log)
         != NGX_OK)
     {
@@ -961,9 +949,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
     tf->file.fd = of.fd;
     tf->file.name = name;
     tf->file.log = r->connection->log;
-
-    /* FIXME we should not always set directio here */
-    tf->file.directio = 1;
+    tf->file.directio = 0;
 
     if (of.size == 0) {
         if (clean) {
@@ -992,7 +978,7 @@ ngx_http_lua_ngx_req_set_body_file(lua_State *L)
     /* register file cleanup hook */
 
     cln = ngx_pool_cleanup_add(r->pool,
-            sizeof(ngx_pool_cleanup_file_t));
+                               sizeof(ngx_pool_cleanup_file_t));
 
     if (cln == NULL) {
         return luaL_error(L, "out of memory");
@@ -1043,7 +1029,7 @@ set_header:
         rc = ngx_http_lua_set_input_header(r, key, value, 1 /* override */);
         if (rc != NGX_OK) {
             return luaL_error(L, "failed to reset the Content-Length "
-                    "input header");
+                              "input header");
         }
     }
 
@@ -1083,6 +1069,19 @@ ngx_http_lua_write_request_body(ngx_http_request_t *r, ngx_chain_t *body)
         }
 
         rb->temp_file = tf;
+
+        if (body == NULL) {
+            /* empty body with r->request_body_in_file_only */
+
+            if (ngx_create_temp_file(&tf->file, tf->path, tf->pool,
+                                     tf->persistent, tf->clean, tf->access)
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+            return NGX_OK;
+        }
     }
 
     n = ngx_write_chain_to_temp_file(rb->temp_file, body);
@@ -1102,35 +1101,34 @@ ngx_http_lua_write_request_body(ngx_http_request_t *r, ngx_chain_t *body)
 static ngx_int_t
 ngx_http_lua_read_body_resume(ngx_http_request_t *r)
 {
+    lua_State                   *vm;
     ngx_int_t                    rc;
     ngx_connection_t            *c;
     ngx_http_lua_ctx_t          *ctx;
-    ngx_http_lua_main_conf_t    *lmcf;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 
     ctx->resume_handler = ngx_http_lua_wev_handler;
 
-    lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
-
     c = r->connection;
+    vm = ngx_http_lua_get_lua_vm(r, ctx);
 
-    rc = ngx_http_lua_run_thread(lmcf->lua, r, ctx, 0);
+    rc = ngx_http_lua_run_thread(vm, r, ctx, 0);
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "lua run thread returned %d", rc);
 
     if (rc == NGX_AGAIN) {
-        return ngx_http_lua_run_posted_threads(c, lmcf->lua, r, ctx);
+        return ngx_http_lua_run_posted_threads(c, vm, r, ctx);
     }
 
     if (rc == NGX_DONE) {
-        ngx_http_finalize_request(r, NGX_DONE);
-        return ngx_http_lua_run_posted_threads(c, lmcf->lua, r, ctx);
+        ngx_http_lua_finalize_request(r, NGX_DONE);
+        return ngx_http_lua_run_posted_threads(c, vm, r, ctx);
     }
 
     if (ctx->entered_content_phase) {
-        ngx_http_finalize_request(r, rc);
+        ngx_http_lua_finalize_request(r, rc);
         return NGX_DONE;
     }
 
@@ -1163,3 +1161,4 @@ ngx_http_lua_req_body_cleanup(void *data)
     r->keepalive = 0;
 }
 
+/* vi:set ft=c ts=4 sw=4 et fdm=marker: */

@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 use t::StapThread;
 
 our $GCScript = <<_EOC_;
@@ -20,7 +20,7 @@ our $StapScript = $t::StapThread::StapScript;
 
 repeat_each(2);
 
-plan tests => repeat_each() * (blocks() * 3);
+plan tests => repeat_each() * (blocks() * 3 + 1);
 
 $ENV{TEST_NGINX_RESOLVER} ||= '8.8.8.8';
 $ENV{TEST_NGINX_MEMCACHED_PORT} ||= '11211';
@@ -196,7 +196,7 @@ bad things happen
 
     location = /sub {
         proxy_ignore_client_abort on;
-        proxy_pass http://www.google.com:1234/;
+        proxy_pass http://agentzh.org:12345/;
     }
 
     location = /sleep {
@@ -237,7 +237,7 @@ client prematurely closed connection
 
     location = /sub {
         proxy_ignore_client_abort off;
-        proxy_pass http://www.google.com:1234/;
+        proxy_pass http://agentzh.org:12345/;
     }
 --- request
 GET /t
@@ -381,6 +381,7 @@ lua check broken conn
 lua req cleanup
 delete thread 1
 
+--- wait: 0.1
 --- timeout: 0.2
 --- abort
 --- ignore_response
@@ -919,4 +920,149 @@ lua req cleanup
 --- no_error_log
 [error]
 [alert]
+
+
+
+=== TEST 27: ngx.say
+--- config
+    location /t {
+        postpone_output 1;
+        content_by_lua '
+            ngx.sleep(0.2)
+            local ok, err = ngx.say("hello")
+            if not ok then
+                ngx.log(ngx.WARN, "say failed: ", err)
+                return
+            end
+        ';
+    }
+--- request
+GET /t
+
+--- wait: 0.2
+--- timeout: 0.1
+--- abort
+--- ignore_response
+--- no_error_log
+[error]
+[alert]
+--- error_log
+say failed: nginx output filter error
+
+
+
+=== TEST 28: ngx.print
+--- config
+    location /t {
+        postpone_output 1;
+        content_by_lua '
+            ngx.sleep(0.2)
+            local ok, err = ngx.print("hello")
+            if not ok then
+                ngx.log(ngx.WARN, "print failed: ", err)
+                return
+            end
+        ';
+    }
+--- request
+GET /t
+
+--- wait: 0.2
+--- timeout: 0.1
+--- abort
+--- ignore_response
+--- no_error_log
+[error]
+[alert]
+--- error_log
+print failed: nginx output filter error
+
+
+
+=== TEST 29: ngx.send_headers
+--- config
+    location /t {
+        postpone_output 1;
+        content_by_lua '
+            ngx.sleep(0.2)
+            local ok, err = ngx.send_headers()
+            if not ok then
+                ngx.log(ngx.WARN, "send headers failed: ", err)
+                return
+            end
+            ngx.log(ngx.WARN, "send headers succeeded")
+        ';
+    }
+--- request
+GET /t
+
+--- wait: 0.2
+--- timeout: 0.1
+--- abort
+--- ignore_response
+--- no_error_log
+[error]
+[alert]
+--- error_log
+send headers succeeded
+
+
+
+=== TEST 30: ngx.flush
+--- config
+    location /t {
+        #postpone_output 1;
+        content_by_lua '
+            ngx.say("hello")
+            ngx.sleep(0.2)
+            local ok, err = ngx.flush()
+            if not ok then
+                ngx.log(ngx.WARN, "flush failed: ", err)
+                return
+            end
+            ngx.log(ngx.WARN, "flush succeeded")
+        ';
+    }
+--- request
+GET /t
+
+--- wait: 0.2
+--- timeout: 0.1
+--- abort
+--- ignore_response
+--- no_error_log
+[error]
+[alert]
+--- error_log
+flush succeeded
+
+
+
+=== TEST 31: ngx.eof
+--- config
+    location /t {
+        postpone_output 1;
+        content_by_lua '
+            ngx.sleep(0.2)
+            local ok, err = ngx.eof()
+            if not ok then
+                ngx.log(ngx.WARN, "eof failed: ", err)
+                return
+            end
+            ngx.log(ngx.WARN, "eof succeeded")
+        ';
+    }
+--- request
+GET /t
+
+--- wait: 0.2
+--- timeout: 0.1
+--- abort
+--- ignore_response
+--- no_error_log
+[error]
+[alert]
+eof succeeded
+--- error_log
+eof failed: nginx output filter error
 

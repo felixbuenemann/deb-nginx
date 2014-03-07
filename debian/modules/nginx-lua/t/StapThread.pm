@@ -225,6 +225,7 @@ M(http-lua-user-coroutine-create) {
 F(ngx_http_lua_ngx_exec) { println("exec") }
 
 F(ngx_http_lua_ngx_exit) { println("exit") }
+F(ngx_http_lua_ffi_exit) { println("exit") }
 
 F(ngx_http_lua_req_body_cleanup) {
     println("lua req body cleanup")
@@ -239,6 +240,10 @@ F(ngx_http_lua_finalize_coroutines) {
 }
 
 F(ngx_http_lua_ngx_exit) {
+    println("ngx.exit() called")
+}
+
+F(ngx_http_lua_ffi_exit) {
     println("ngx.exit() called")
 }
 
@@ -260,10 +265,12 @@ F(ngx_http_lua_del_all_threads) {
     println("del all threads")
 }
 
+/*
 M(http-lua-info) {
     msg = user_string($arg1)
     printf("lua info: %s\n", msg)
 }
+*/
 
 M(http-lua-user-thread-wait) {
     p = gen_id($arg1)

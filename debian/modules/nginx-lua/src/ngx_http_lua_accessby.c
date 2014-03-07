@@ -1,9 +1,15 @@
-/* vim:set ft=c ts=4 sw=4 et fdm=marker: */
+
+/*
+ * Copyright (C) Xiaozhe Wang (chaoslawful)
+ * Copyright (C) Yichun Zhang (agentzh)
+ */
+
 
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif
 #include "ddebug.h"
+
 
 #include <nginx.h>
 #include "ngx_http_lua_accessby.h"
@@ -26,8 +32,9 @@ ngx_http_lua_access_handler(ngx_http_request_t *r)
     ngx_http_phase_handler_t    tmp, *ph, *cur_ph, *last_ph;
     ngx_http_core_main_conf_t  *cmcf;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "lua access handler, uri \"%V\"", &r->uri);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "lua access handler, uri:\"%V\" c:%ud", &r->uri,
+                   r->main->count);
 
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
 
@@ -44,7 +51,7 @@ ngx_http_lua_access_handler(ngx_http_request_t *r)
         last_ph = &ph[cur_ph->next - 2];
 
         dd("ph cur: %d, ph next: %d", (int) r->phase_handler,
-                (int) (cur_ph->next - 2));
+           (int) (cur_ph->next - 2));
 
 #if 0
         if (cur_ph == last_ph) {
@@ -111,9 +118,14 @@ ngx_http_lua_access_handler(ngx_http_request_t *r)
         r->request_body_in_clean_file = 1;
 
         rc = ngx_http_read_client_request_body(r,
-                ngx_http_lua_generic_phase_post_read);
+                                       ngx_http_lua_generic_phase_post_read);
 
         if (rc == NGX_ERROR || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+#if (nginx_version < 1002006) ||                                             \
+        (nginx_version >= 1003000 && nginx_version < 1003009)
+            r->main->count--;
+#endif
+
             return rc;
         }
 
@@ -131,30 +143,21 @@ ngx_http_lua_access_handler(ngx_http_request_t *r)
 ngx_int_t
 ngx_http_lua_access_handler_inline(ngx_http_request_t *r)
 {
-    char                      *err;
     ngx_int_t                  rc;
     lua_State                 *L;
     ngx_http_lua_loc_conf_t   *llcf;
-    ngx_http_lua_main_conf_t  *lmcf;
 
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
-    lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
 
-    L = lmcf->lua;
+    L = ngx_http_lua_get_lua_vm(r, NULL);
 
     /*  load Lua inline script (w/ cache) sp = 1 */
     rc = ngx_http_lua_cache_loadbuffer(L, llcf->access_src.value.data,
-            llcf->access_src.value.len, llcf->access_src_key,
-            "access_by_lua", &err, llcf->enable_code_cache ? 1 : 0);
+                                       llcf->access_src.value.len,
+                                       llcf->access_src_key,
+                                       "access_by_lua");
 
     if (rc != NGX_OK) {
-        if (err == NULL) {
-            err = "unknown error";
-        }
-
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to load Lua inlined code: %s", err);
-
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -165,13 +168,11 @@ ngx_http_lua_access_handler_inline(ngx_http_request_t *r)
 ngx_int_t
 ngx_http_lua_access_handler_file(ngx_http_request_t *r)
 {
-    char                      *err;
     u_char                    *script_path;
     ngx_int_t                  rc;
     ngx_str_t                  eval_src;
     lua_State                 *L;
     ngx_http_lua_loc_conf_t   *llcf;
-    ngx_http_lua_main_conf_t  *lmcf;
 
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
 
@@ -187,21 +188,11 @@ ngx_http_lua_access_handler_file(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
-    L = lmcf->lua;
+    L = ngx_http_lua_get_lua_vm(r, NULL);
 
     /*  load Lua script file (w/ cache)        sp = 1 */
-    rc = ngx_http_lua_cache_loadfile(L, script_path, llcf->access_src_key,
-            &err, llcf->enable_code_cache ? 1 : 0);
-
+    rc = ngx_http_lua_cache_loadfile(L, script_path, llcf->access_src_key);
     if (rc != NGX_OK) {
-        if (err == NULL) {
-            err = "unknown error";
-        }
-
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "failed to load lua inlined code: %s", err);
-
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -243,10 +234,7 @@ ngx_http_lua_access_by_chunk(lua_State *L, ngx_http_request_t *r)
     lua_setfenv(co, -2);
 
     /*  save nginx request in coroutine globals table */
-    lua_pushlightuserdata(co, &ngx_http_lua_request_key);
-    lua_pushlightuserdata(co, r);
-    lua_rawset(co, LUA_GLOBALSINDEX);
-    /*  }}} */
+    ngx_http_lua_set_req(co, r);
 
     /*  {{{ initialize request context */
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
@@ -274,8 +262,8 @@ ngx_http_lua_access_by_chunk(lua_State *L, ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        cln->handler = ngx_http_lua_request_cleanup;
-        cln->data = r;
+        cln->handler = ngx_http_lua_request_cleanup_handler;
+        cln->data = ctx;
         ctx->cleanup = &cln->handler;
     }
     /*  }}} */
@@ -312,7 +300,7 @@ ngx_http_lua_access_by_chunk(lua_State *L, ngx_http_request_t *r)
     }
 
     if (rc == NGX_DONE) {
-        ngx_http_finalize_request(r, NGX_DONE);
+        ngx_http_lua_finalize_request(r, NGX_DONE);
 
         rc = ngx_http_lua_run_posted_threads(c, L, r, ctx);
 
@@ -326,3 +314,4 @@ ngx_http_lua_access_by_chunk(lua_State *L, ngx_http_request_t *r)
     return NGX_DECLINED;
 }
 
+/* vi:set ft=c ts=4 sw=4 et fdm=marker: */

@@ -4,43 +4,34 @@ README for Modules versions
  This file lists third party modules built with nginx in Debian, homepage and
  version.
 
- chunkin-nginx-module
-  https://github.com/agentzh/chunkin-nginx-module
-  Version: v0.23rc2-3-g85eca98
-
  headers-more-nginx-module
   https://github.com/agentzh/headers-more-nginx-module
-  Version: v0.19
+  Version: v0.25
 
  nginx-development-kit
   https://github.com/simpl/ngx_devel_kit/
-  Version: v0.2.17-7-g24202b4
+  Version: v0.2.19
 
  nginx-auth-pam
   http://web.iti.upv.es/~sto/nginx/
-  Version: 1.2
+  Version: 1.3
 
  nginx-echo
   https://github.com/agentzh/echo-nginx-module
-  Version: v0.41
+  Version: v0.51
 
  nginx-lua
   Homepage: https://github.com/chaoslawful/lua-nginx-module
   https://github.com/chaoslawful/lua-nginx-module.git
-  Version: v0.7.8
+  Version: v0.9.4
 
  nginx-upstream-fair
   Homepage: https://github.com/gnosek/nginx-upstream-fair
-  Version: a18b409
+  Version: 5320be7 (edited to re-add NGX_DEBUG ifdef)
 
- nginx-push
-  Homepage: http://pushmodule.slact.net/#download
-  http://pushmodule.slact.net/downloads/nginx_http_push_module-0.692.tar.gz
-  Version: 0.692
-
- nginx-upload
-  Homepage: https://github.com/vkholodkov/nginx-upload-module
-  Version: 2.2.0
+ nginx-push-stream
+  Homepage: https://github.com/wandenberg/nginx-push-stream-module
+  Version: 0.4.0
 
  nginx-upload-progress
   Homepage: https://github.com/masterzen/nginx-upload-progress-module
@@ -49,13 +40,13 @@ README for Modules versions
   Version: v0.9.0-0-ga788dea
 
  naxsi
-  Homepage: http://code.google.com/p/naxsi/
-  Version: 0.48
+  Homepage: http://code.google.com/p/naxsi://github.com/nbs-system/naxsi 
+  Version: 0.53-2
 
  nginx-cache-purge
   Homepage: http://labs.frickle.com/nginx_ngx_cache_purge/
-  Version: 2.0
+  Version: 2.1 + multidir/optimization patches
 
  nginx-dav-ext-module
   Homepage: https://github.com/arut/nginx-dav-ext-module
-  Version: v0.0.2-2-g54cebc1.tar.gz
+  Version: v0.0.3

@@ -32,7 +32,7 @@
 #ifndef __FOO_H__
 #define __FOO_H__
 
-#define NAXSI_VERSION "0.48"
+#define NAXSI_VERSION "0.53-1"
 
 #include <nginx.h>
 #include <ngx_config.h>
@@ -46,6 +46,8 @@
 
 
 extern ngx_module_t ngx_http_naxsi_module;
+
+#define UPDATE_C(js) js->c = *(js->src + js->off)
 
 /*
 ** Here is globally how the structures are organized :
@@ -96,7 +98,10 @@ typedef struct
   /* match on URL [name] */
   ngx_flag_t		specific_url:1;
   ngx_str_t		target;
+  /* to be used for regexed match zones */
+  ngx_regex_compile_t	*target_rx;
   ngx_uint_t		hash;
+  
 } ngx_http_custom_rule_location_t;
 
 
@@ -145,11 +150,11 @@ typedef struct
 */
 typedef struct
 {
-  //ngx_http_whitelist_location_t
+  /*ngx_http_whitelist_location_t **/
   ngx_array_t			*whitelist_locations; 
-  // zone to wich the WL applies
+  /* zone to wich the WL applies */
   enum DUMMY_MATCH_ZONE		zone;
-  // if the "name" is only an url, specify it
+  /* if the "name" is only an url, specify it */
   int				uri_only:1;
   /* does the rule targets the name 
      instead of the content ?*/
@@ -170,8 +175,9 @@ typedef struct
 {
   ngx_str_t		*str; // string
   ngx_regex_compile_t   *rx;  // or regex
-  ngx_int_t		transform; //transform rule to apply, as flags.
+  ngx_int_t		rx_mz;
   /* ~~~~~ match zones ~~~~~~ */
+  ngx_int_t			zone;
   /* match in full body (POST DATA) */
   ngx_flag_t		body:1;
   ngx_flag_t		body_var:1;
@@ -203,8 +209,6 @@ typedef struct
 
 /* define for RULE TYPE in rule_t */
 #define BR 1 
-//#define FR 2 UNUSED
-//#define WR 3 UNUSED
 
 /* flags used for 'custom match rules', like $XSS > 7 */
 #define SUP 1
@@ -223,6 +227,7 @@ typedef struct
   ngx_int_t	sc_score;
   ngx_flag_t	block:1;
   ngx_flag_t	allow:1;
+  ngx_flag_t	drop:1;
   ngx_flag_t	log:1;
 } ngx_http_special_score_t;
 
@@ -238,6 +243,7 @@ typedef struct
   ngx_int_t	cmp;
   ngx_flag_t	block:1;
   ngx_flag_t	allow:1;
+  ngx_flag_t	drop:1;
   ngx_flag_t	log:1;
 } ngx_http_check_rule_t;
 
@@ -246,9 +252,10 @@ typedef struct
 {
   /* type of the rule */
   ngx_int_t			type;
-  // simply put a flag if it's a wlr, wl_id array will be used to store the whitelisted IDs
+  /* simply put a flag if it's a wlr, 
+     wl_id array will be used to store the whitelisted IDs */
   ngx_flag_t			whitelist:1;
-  ngx_int_t			*wl_id;
+  ngx_array_t			*wlid_array;
   /* "common" data for all rules */
   ngx_int_t			rule_id;
   ngx_str_t			*log_msg; // a specific log message
@@ -256,17 +263,13 @@ typedef struct
   
   /* List of scores increased on rule match. */
   ngx_array_t			*sscores;
-  /*ngx_str_t			*sc_tag; //specific score tag
-    ngx_int_t			sc_score;  //specific score value*/
   ngx_flag_t			sc_block:1; //
   ngx_flag_t			sc_allow:1; //
   // end of specific score tag stuff
   ngx_flag_t			block:1;
   ngx_flag_t			allow:1;
+  ngx_flag_t			drop:1;
   ngx_flag_t			log:1;
-  /* flag set if we're linked FROM or TO another rule  */
-  ngx_flag_t			lnk_to:1;
-  ngx_flag_t			lnk_from:1;
   /* pointers on specific rule stuff */
   ngx_http_basic_rule_t		*br;
 } ngx_http_rule_t;
@@ -279,6 +282,7 @@ typedef struct
   ngx_array_t	*generic_rules; 
   ngx_array_t	*locations; /*ngx_http_dummy_loc_conf_t*/
   ngx_log_t	*log;
+  
 } ngx_http_dummy_main_conf_t;
 
 
@@ -294,6 +298,8 @@ typedef struct
   ngx_array_t   *whitelist_rules;
   /* raw array of transformed whitelists */
   ngx_array_t	*tmp_wlr;
+  /* raw array of regex-mz whitelists */
+  ngx_array_t   *rxmz_wlr;
   /* hash table of whitelisted URL rules */
   ngx_hash_t	*wlr_url_hash;
   /* hash table of whitelisted ARGS rules */
@@ -306,15 +312,23 @@ typedef struct
   ngx_array_t	*disabled_rules;
   /* counters for both processed requests and
      blocked requests, used in naxsi_fmt */
-  ngx_int_t	request_processed;
-  ngx_int_t	request_blocked;
+  size_t	request_processed;
+  size_t	request_blocked;
   ngx_int_t	error;
   ngx_array_t	*persistant_data;
+  ngx_flag_t	extensive:1;
   ngx_flag_t	learning:1;
   ngx_flag_t	enabled:1;
   ngx_flag_t	force_disabled:1;
   ngx_flag_t	pushed:1;
   ngx_str_t	*denied_url;
+  /* precomputed hash for dynamic variable lookup, 
+     variable themselves are boolean */
+  ngx_uint_t	flag_enable_h;
+  ngx_uint_t	flag_learning_h;
+  ngx_uint_t	flag_post_action_h;
+  ngx_uint_t	flag_extensive_log_h;
+  
 } ngx_http_dummy_loc_conf_t;
 
 
@@ -347,21 +361,42 @@ typedef struct
 {
   ngx_array_t	*special_scores;
   ngx_int_t	score;
-  // blocking flags
+  /* blocking flags */
   ngx_flag_t	log:1;
   ngx_flag_t	block:1;
   ngx_flag_t	allow:1;
-  // state
+  ngx_flag_t	drop:1;
+  /* state */
   ngx_flag_t	wait_for_body:1;
   ngx_flag_t	ready:1;
   ngx_flag_t	over:1;
-  // flag request
-  ngx_flag_t	weird_request:1;
-  ngx_flag_t	big_request:1;
-  //
-  // matched rules
+  /* matched rules */
   ngx_array_t	*matched;
+  /* runtime flags (modifiers) */
+  ngx_flag_t	learning:1;
+  ngx_flag_t	enabled:1;
+  ngx_flag_t	post_action:1;
+  ngx_flag_t	extensive_log:1;
+  
 } ngx_http_request_ctx_t;
+
+/*
+** this structure is used only for json parsing.
+*/
+typedef struct ngx_http_nx_json_s {
+  ngx_str_t	json;
+  u_char	*src;
+  ngx_int_t	off, len;
+  u_char	c;
+  int		depth;
+  ngx_http_request_t *r;
+  ngx_http_request_ctx_t *ctx;
+  ngx_str_t	ckey;
+  ngx_http_dummy_main_conf_t	*main_cf;
+  ngx_http_dummy_loc_conf_t	*loc_cf;
+} ngx_json_t;
+
+
 
 #define TOP_DENIED_URL_T	"DeniedUrl"
 #define TOP_LEARNING_FLAG_T	"LearningMode"
@@ -371,11 +406,18 @@ typedef struct
 #define TOP_BASIC_RULE_T	"BasicRule"
 #define TOP_MAIN_BASIC_RULE_T	"MainRule"
 
+/* nginx-style names */
+#define TOP_DENIED_URL_N	"denied_url"
+#define TOP_LEARNING_FLAG_N	"learning_mode"
+#define TOP_ENABLED_FLAG_N	"rules_enabled"
+#define TOP_DISABLED_FLAG_N	"rules_disabled"
+#define TOP_CHECK_RULE_N	"check_rule"
+#define TOP_BASIC_RULE_N	"basic_rule"
+#define TOP_MAIN_BASIC_RULE_N	"main_rule"
+
 /*possible 'tokens' in rule */
 #define ID_T "id:"
-#define TRANSFORM_T "t:"
 #define SCORE_T "s:"
-#define PERSISTANT_SCORE_T "ps:"
 #define MSG_T "msg:"
 #define RX_T "rx:"
 #define STR_T "str:"
@@ -383,33 +425,93 @@ typedef struct
 #define WHITELIST_T "wl:"
 #define NEGATIVE_T  "negative"
 
+/* 
+** name of hardcoded variables to 
+** change behavior of naxsi at runtime 
+*/
+#define RT_EXTENSIVE_LOG "naxsi_extensive_log"
+#define RT_ENABLE "naxsi_flag_enable"
+#define RT_LEARNING "naxsi_flag_learning"
+#define RT_POST_ACTION "naxsi_flag_post_action"
 
 
-extern ngx_http_dummy_loc_conf_t *dummy_lc;
+
+/*
+** To avoid getting DoS'ed, define max depth
+** for JSON parser, as it is recursive
+*/
+#define JSON_MAX_DEPTH 10
 
 
-
-void		*ngx_http_dummy_cfg_parse_one_rule(ngx_conf_t *cf,
-						   ngx_str_t	*value,
-						   ngx_http_rule_t *rule,
-						   ngx_int_t	nb_elem);
-char		*strfaststr(unsigned char *haystack, unsigned int hl,
-			    unsigned char *needle, unsigned int nl);
-char		*strnchr(const char *s, int c, int len);
-char		*strncasechr(const char *s, int c, int len);
-ngx_int_t	ngx_http_dummy_create_hashtables(ngx_http_dummy_loc_conf_t *dlc,
-						 ngx_conf_t *cf);
-ngx_int_t	ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc,
-						 ngx_conf_t *cf);
-void		ngx_http_dummy_data_parse(ngx_http_request_ctx_t *ctx, 
+void			*ngx_http_dummy_cfg_parse_one_rule(ngx_conf_t *cf,
+							   ngx_str_t	*value,
+							   ngx_http_rule_t *rule,
+							   ngx_int_t	nb_elem);
+char			*strfaststr(unsigned char *haystack, unsigned int hl,
+				    unsigned char *needle, unsigned int nl);
+char			*strnchr(const char *s, int c, int len);
+char			*strncasechr(const char *s, int c, int len);
+ngx_int_t		ngx_http_dummy_create_hashtables(ngx_http_dummy_loc_conf_t *dlc,
+							 ngx_conf_t *cf);
+ngx_int_t		ngx_http_dummy_create_hashtables_n(ngx_http_dummy_loc_conf_t *dlc,
+							   ngx_conf_t *cf);
+void			ngx_http_dummy_data_parse(ngx_http_request_ctx_t *ctx, 
 						  ngx_http_request_t	 *r);
-ngx_int_t	ngx_http_output_forbidden_page(ngx_http_request_ctx_t *ctx, 
-					       ngx_http_request_t *r);
-void
-naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, ngx_uint_t type);
+ngx_int_t		ngx_http_output_forbidden_page(ngx_http_request_ctx_t *ctx, 
+						       ngx_http_request_t *r);
+int			naxsi_unescape_uri(u_char **dst, u_char **src, size_t size, 
+					   ngx_uint_t type);
 
-/* static ngx_int_t ngx_http_dummy_subrequest(ngx_http_request_t *r,  */
-/* 					   ngx_chain_t *in); */
-//ngx_int_t ngx_http_dummy_subrequest(ngx_http_request_t *r);
+int			nx_check_ids(ngx_int_t match_id, ngx_array_t *wl_ids);
+int			naxsi_unescape(ngx_str_t *str);
+
+void			ngx_http_dummy_json_parse(ngx_http_request_ctx_t *ctx, 
+						  ngx_http_request_t	 *r,
+						  u_char		 *src,
+						  u_int			 len);
+
+
+/*
+** JSON parsing prototypes.
+*/
+ngx_int_t		ngx_http_nx_json_forward(ngx_json_t *js) ;
+ngx_int_t		ngx_http_nx_json_seek(ngx_json_t *js, unsigned char seek);
+ngx_int_t		ngx_http_nx_json_quoted(ngx_json_t *js, ngx_str_t *ve);
+ngx_int_t		ngx_http_nx_json_array(ngx_json_t *js);
+ngx_int_t		ngx_http_nx_json_val(ngx_json_t *js);
+ngx_int_t		ngx_http_nx_json_obj(ngx_json_t *js);
+
+
+/*
+** naxsi_runtime
+**
+*/
+
+void			ngx_http_dummy_update_current_ctx_status(ngx_http_request_ctx_t	*ctx, 
+								 ngx_http_dummy_loc_conf_t *cf, 
+								 ngx_http_request_t *r);
+int			ngx_http_process_basic_rule_buffer(ngx_str_t *str, ngx_http_rule_t *rl, 
+							   ngx_int_t *match);
+void			ngx_http_dummy_payload_handler(ngx_http_request_t *r);
+int			ngx_http_basestr_ruleset_n(ngx_pool_t *pool,
+						   ngx_str_t	*name,
+						   ngx_str_t	*value,
+						   ngx_array_t *rules,
+						   ngx_http_request_t *req,
+						   ngx_http_request_ctx_t *ctx,
+						   enum DUMMY_MATCH_ZONE zone);
+void			ngx_http_dummy_body_parse(ngx_http_request_ctx_t *ctx, 
+						  ngx_http_request_t	 *r,
+						  ngx_http_dummy_loc_conf_t *cf,
+						  ngx_http_dummy_main_conf_t *main_cf);
+void			naxsi_log_offending(ngx_str_t *name, ngx_str_t *val, ngx_http_request_t *req, 
+					    ngx_http_rule_t *rule, enum DUMMY_MATCH_ZONE zone);
+
+int			ngx_http_apply_rulematch_v_n(ngx_http_rule_t *r, ngx_http_request_ctx_t *ctx, 
+						     ngx_http_request_t *req, ngx_str_t *name, 
+						     ngx_str_t *value, enum DUMMY_MATCH_ZONE zone, 
+						     ngx_int_t nb_match, ngx_int_t target_name);
+
+
 #endif
 

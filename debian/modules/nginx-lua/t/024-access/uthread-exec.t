@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 use t::StapThread;
 
 our $GCScript = $t::StapThread::GCScript;
@@ -168,6 +168,7 @@ delete thread 2
 delete thread 1
 free request
 
+--- wait: 0.1
 --- response_body
 hello foo
 --- no_error_log

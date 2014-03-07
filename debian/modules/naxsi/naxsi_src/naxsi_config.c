@@ -86,6 +86,7 @@ dummy_score(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
   rule->score = 0;
   rule->block = 0;
   rule->allow = 0;
+  rule->drop = 0;
   tmp_ptr = (char *) (tmp->data + strlen(SCORE_T));
 #ifdef score_debug 
   ngx_conf_log_error(NGX_LOG_EMERG, r, 0,
@@ -112,6 +113,8 @@ dummy_score(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
       if (len <= 0)
 	return (NGX_CONF_ERROR);
       sc = ngx_array_push(rule->sscores);
+      if (!sc)
+	return (NGX_CONF_ERROR);
       sc->sc_tag = ngx_pcalloc(r->pool, sizeof(ngx_str_t));
       if (!sc->sc_tag)
 	return (NGX_CONF_ERROR);
@@ -138,6 +141,10 @@ dummy_score(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
     else if (!strcasecmp(tmp_ptr, "BLOCK")) {
       rule->block = 1;
       tmp_ptr += 5;
+    }
+    else if (!strcasecmp(tmp_ptr, "DROP")) {
+      rule->drop = 1;
+      tmp_ptr += 4;
     }
     else if (!strcasecmp(tmp_ptr, "ALLOW")) {
       rule->allow = 1;
@@ -174,69 +181,6 @@ dummy_score(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
 #endif
   return (NGX_CONF_OK);
 }
-  
-  
-  
-  /*rule->sc_score = 0;
-    rule->sc_allow = 0;*/
-/*   tmp_ptr = (char *) (tmp->data + strlen(SCORE_T)); */
-/*   while (*tmp_ptr) { */
-/* #ifdef score_debug */
-/*     ngx_conf_log_error(NGX_LOG_EMERG, r, 0,  */
-/* 		       "XX-(debug) scoring rule, remains '%s'", */
-/* 		       tmp_ptr); */
-/* #endif */
-/*     if (tmp_ptr[0] == '$') { */
-/*       tmp_end = strchr(tmp_ptr, ':'); */
-/*       if (!tmp_end) */
-/* 	return (NGX_CONF_ERROR); */
-/*       len = tmp_end - tmp_ptr; */
-/*       if (len <= 0) */
-/* 	return (NGX_CONF_ERROR); */
-/*       rule->sc_tag = ngx_pcalloc(r->pool, sizeof(ngx_str_t)); */
-/*       if (!rule->sc_tag) */
-/* 	return (NGX_CONF_ERROR); */
-/*       rule->sc_tag->data = ngx_pcalloc(r->pool, len+1); */
-/*       if (!rule->sc_tag->data) */
-/* 	return (NGX_CONF_ERROR); */
-/*       //memset(rule->sc_tag->data, 0, len+1); */
-/*       memcpy(rule->sc_tag->data, tmp_ptr, len); */
-/*       rule->sc_tag->len = len; */
-/*       rule->sc_score = atoi(tmp_end+1); */
-/*       //don't check on sc_score as it can be negative :p */
-/* #ifdef score_debug */
-/*       ngx_conf_log_error(NGX_LOG_EMERG, r, 0,  */
-/* 			 "XX-(debug) special scoring rule (%s:%d)", */
-/* 			 rule->sc_tag->data, rule->sc_score); */
-/* #endif */
-/*       tmp_ptr = tmp_end+1; */
-/*       return (NGX_CONF_OK); */
-/*     } */
-/*     else if (!strcasecmp(tmp_ptr, "BLOCK")) { */
-/*       rule->block = 1; */
-/*       tmp_ptr += 5; */
-/*       return (NGX_CONF_OK); */
-/*     } */
-/*     else if (!strcasecmp(tmp_ptr, "ALLOW")) { */
-/*       rule->allow = 1; */
-/*       tmp_ptr += 5; */
-/*       return (NGX_CONF_OK); */
-/*     } */
-/*     //or maybe you just want to assign a score */
-/*     else if ( (tmp_ptr[0] >= '0' && tmp_ptr[0] <= '9') || tmp_ptr[0] == '-') { */
-/*       score = atoi((const char *)tmp->data+2); */
-/*       // I think score should be able to be negative, so remove this check. */
-/*       /\* if (score <= 0) *\/ */
-/*       /\*   return (NGX_CONF_ERROR); *\/ */
-/*       rule->score = score; */
-/*       return (NGX_CONF_OK); */
-/*     } */
-/*     else */
-/*       return (NGX_CONF_ERROR); */
-/*   } */
-/* return (NGX_CONF_ERROR); */
-/* } */
-
 
 //#define dummy_zone_debug
 void	*
@@ -249,16 +193,16 @@ dummy_zone(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
 
   if (!rule->br)
     return (NGX_CONF_ERROR);
-/* #ifdef dummy_zone_debug */
-/*   ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "FEU:%V", tmp); */
-/* #endif   */
+  /* #ifdef dummy_zone_debug */
+  /*   ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "FEU:%V", tmp); */
+  /* #endif   */
 
   
   tmp_ptr = (char *) tmp->data+strlen(MATCH_ZONE_T);
   while (*tmp_ptr) {
-/* #ifdef dummy_zone_debug  */
-/*     ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "FEU:%s", tmp_ptr);  */
-/* #endif  */
+    /* #ifdef dummy_zone_debug  */
+    /*     ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "FEU:%s", tmp_ptr);  */
+    /* #endif  */
     
     if (tmp_ptr[0] == '|')
       tmp_ptr++;
@@ -347,7 +291,45 @@ dummy_zone(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
 		    tmp_ptr += strlen(MZ_SPECIFIC_URL_T);
 		  }
 		  else 
-		    return (NGX_CONF_ERROR);
+		    /* add support for regex-style match zones. 
+		    ** this whole function should be rewritten as it's getting
+		    ** messy as hell
+		    */
+#define MZ_GET_VAR_X "$ARGS_VAR_X:"
+#define MZ_HEADER_VAR_X "$HEADERS_VAR_X:"
+#define MZ_POST_VAR_X "$BODY_VAR_X:"
+#define MZ_SPECIFIC_URL_X "$URL_X:"
+		    if (!strncmp(tmp_ptr, MZ_GET_VAR_X, strlen(MZ_GET_VAR_X))) {
+		      custom_rule->args_var = 1;
+		      rule->br->args_var = 1;
+		      rule->br->rx_mz = 1;
+		      tmp_ptr += strlen(MZ_GET_VAR_X);
+		    }
+		    else if (!strncmp(tmp_ptr, MZ_POST_VAR_X, 
+				      strlen(MZ_POST_VAR_X))) {
+		      rule->br->rx_mz = 1;
+		      custom_rule->body_var = 1;
+		      rule->br->body_var = 1;
+		      tmp_ptr += strlen(MZ_POST_VAR_X);
+		    }
+		    else if (!strncmp(tmp_ptr, MZ_HEADER_VAR_X, 
+				      strlen(MZ_HEADER_VAR_X))) {
+		      custom_rule->headers_var = 1;
+		      rule->br->headers_var = 1;
+		      rule->br->rx_mz = 1;
+		      tmp_ptr += strlen(MZ_HEADER_VAR_X);
+		    }
+		    else if (!strncmp(tmp_ptr, MZ_SPECIFIC_URL_X, 
+				      strlen(MZ_SPECIFIC_URL_X))) { 
+		      custom_rule->specific_url = 1;
+		      rule->br->rx_mz = 1;
+		      tmp_ptr += strlen(MZ_SPECIFIC_URL_X);
+		    }
+		    else 
+		      return (NGX_CONF_ERROR);
+		  
+		  /*		  else 
+				  return (NGX_CONF_ERROR);*/
 		  tmp_end = strchr((const char *) tmp_ptr, '|');
 		  if (!tmp_end) 
 		    tmp_end = tmp_ptr + strlen(tmp_ptr);
@@ -378,12 +360,6 @@ void	*
 dummy_id(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
 {
   rule->rule_id = atoi((const char *) tmp->data+strlen(ID_T));
-  if (rule->rule_id < 0) {
-    ngx_conf_log_error(NGX_LOG_EMERG, r, 0, 
-		       "id: failed (%s), should be numeric only",
-		       tmp->data);
-    return (NGX_CONF_ERROR);
-  }
   return (NGX_CONF_OK);
 }
 
@@ -400,7 +376,7 @@ dummy_str(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
     return (NGX_CONF_ERROR);
   str->data = tmp->data + strlen(STR_T);
   str->len = tmp->len - strlen(STR_T);
-  for (i = 0; i < tmp->len; i++)
+  for (i = 0; i < str->len; i++)
     str->data[i] = tolower(str->data[i]);
   rule->br->str = str;
   return (NGX_CONF_OK);
@@ -427,8 +403,9 @@ void	*
 dummy_whitelist(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
 {
   
-  ngx_int_t	*wl;
+  ngx_array_t	*wl_ar;
   unsigned int	i, ct;
+  ngx_int_t	*id;
   ngx_str_t	str;
   
   str.data = tmp->data + strlen(WHITELIST_T);
@@ -436,27 +413,21 @@ dummy_whitelist(ngx_conf_t *r, ngx_str_t *tmp, ngx_http_rule_t *rule)
   for (ct = 1, i = 0; i < str.len; i++)
     if (str.data[i] == ',')
       ct++;
-  wl = ngx_pcalloc(r->pool, sizeof(ngx_int_t) * (ct+1));
-  if (!wl)
+  wl_ar = ngx_array_create(r->pool, ct, sizeof(ngx_int_t));
+  if (!wl_ar)
     return (NGX_CONF_ERROR);
-  //as 0 means "all rules", memset to -1
-  memset(wl, -1, sizeof(ngx_int_t) * (ct+1));
 #ifdef whitelist_debug
   ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "XX- allocated %d elems for WL", ct);
 #endif
   for (ct = 0, i = 0; i < str.len; i++) {
     if (i == 0 || str.data[i-1] == ',') {
-      wl[ct] = atoi((const char *)str.data+i);
-      //rule ID can't be negative
-      if (wl[ct] < 0)
+      id = (ngx_int_t *) ngx_array_push(wl_ar);
+      if (!id) 
 	return (NGX_CONF_ERROR);
-#ifdef whitelist_debug
-      ngx_conf_log_error(NGX_LOG_EMERG, r, 0, "XX-WL[%d]= %d (idx:%d,%s)", ct, wl[ct], i, str.data);
-#endif
-      ct++;
+      *id = (ngx_int_t) atoi((const char *)str.data+i);
     }
   }
-  rule->wl_id = wl;
+  rule->wlid_array = wl_ar;
   return (NGX_CONF_OK);
 }
 
@@ -520,8 +491,11 @@ ngx_http_dummy_cfg_parse_one_rule(ngx_conf_t *cf,
   ** parse basic rule
   */
   if (!ngx_strcmp(value[0].data, TOP_CHECK_RULE_T) ||
+      !ngx_strcmp(value[0].data, TOP_CHECK_RULE_N) ||
       !ngx_strcmp(value[0].data, TOP_BASIC_RULE_T) ||
-      !ngx_strcmp(value[0].data, TOP_MAIN_BASIC_RULE_T)) {
+      !ngx_strcmp(value[0].data, TOP_BASIC_RULE_N) ||
+      !ngx_strcmp(value[0].data, TOP_MAIN_BASIC_RULE_T) ||
+      !ngx_strcmp(value[0].data, TOP_MAIN_BASIC_RULE_N)) {
 #ifdef dummy_cfg_parse_one_rule_debug
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "XX-basic rule %V", &(value[1]));  
 #endif

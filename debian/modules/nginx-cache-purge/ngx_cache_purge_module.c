@@ -716,6 +716,10 @@ ngx_http_cache_purge_access_handler(ngx_http_request_t *r)
         return NGX_HTTP_FORBIDDEN;
     }
 
+    if (cplcf->handler == NULL) {
+        return NGX_HTTP_NOT_FOUND;
+    }
+
     return cplcf->handler(r);
 }
 
@@ -944,7 +948,7 @@ ngx_http_file_cache_purge(ngx_http_request_t *r)
 #  endif
         break;
     case NGX_DECLINED:
-        return NGX_DECLINED;
+        break;
 #  if (NGX_HAVE_FILE_AIO)
     case NGX_AGAIN:
         return NGX_AGAIN;
@@ -956,14 +960,12 @@ ngx_http_file_cache_purge(ngx_http_request_t *r)
     c = r->cache;
     cache = c->file_cache;
 
-    /*
-     * delete file from disk but *keep* in-memory node,
-     * because other requests might still point to it.
-     */
-
     ngx_shmtx_lock(&cache->shpool->mutex);
 
     if (!c->node->exists) {
+        if (c->node->uses == 1) {
+            c->min_uses = 1;
+        }
         /* race between concurrent purges, backoff */
         ngx_shmtx_unlock(&cache->shpool->mutex);
         return NGX_DECLINED;
@@ -991,6 +993,8 @@ ngx_http_file_cache_purge(ngx_http_request_t *r)
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
                       ngx_delete_file_n " \"%s\" failed", c->file.name.data);
     }
+    
+    c->min_uses = 1;
 
     /* file deleted from cache */
     return NGX_OK;
@@ -1184,11 +1188,10 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->fastcgi.enable && clcf->handler != NULL) {
         flcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_fastcgi_module);
 
-        if (flcf->upstream.cache
-            && (flcf->upstream.upstream || flcf->fastcgi_lengths))
-        {
+        if (flcf->upstream.upstream || flcf->fastcgi_lengths) {
             conf->conf = &conf->fastcgi;
-            conf->handler = ngx_http_fastcgi_cache_purge_handler;
+            conf->handler = flcf->upstream.cache
+                          ? ngx_http_fastcgi_cache_purge_handler : NULL;
             conf->original_handler = clcf->handler;
 
             clcf->handler = ngx_http_cache_purge_access_handler;
@@ -1204,11 +1207,10 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->proxy.enable && clcf->handler != NULL) {
         plcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
 
-        if (plcf->upstream.cache
-            && (plcf->upstream.upstream || plcf->proxy_lengths))
-        {
+        if (plcf->upstream.upstream || plcf->proxy_lengths) {
             conf->conf = &conf->proxy;
-            conf->handler = ngx_http_proxy_cache_purge_handler;
+            conf->handler = plcf->upstream.cache
+                          ? ngx_http_proxy_cache_purge_handler : NULL;
             conf->original_handler = clcf->handler;
 
             clcf->handler = ngx_http_cache_purge_access_handler;
@@ -1224,13 +1226,11 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->scgi.enable && clcf->handler != NULL) {
         slcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_scgi_module);
 
-        if (slcf->upstream.cache
-            && (slcf->upstream.upstream || slcf->scgi_lengths))
-        {
+        if (slcf->upstream.upstream || slcf->scgi_lengths) {
             conf->conf = &conf->scgi;
-            conf->handler = ngx_http_scgi_cache_purge_handler;
+            conf->handler = slcf->upstream.cache
+                          ? ngx_http_scgi_cache_purge_handler : NULL;
             conf->original_handler = clcf->handler;
-
             clcf->handler = ngx_http_cache_purge_access_handler;
 
             return NGX_CONF_OK;
@@ -1244,11 +1244,10 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->uwsgi.enable && clcf->handler != NULL) {
         ulcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_uwsgi_module);
 
-        if (ulcf->upstream.cache
-            && (ulcf->upstream.upstream || ulcf->uwsgi_lengths))
-        {
+        if (ulcf->upstream.upstream || ulcf->uwsgi_lengths) {
             conf->conf = &conf->uwsgi;
-            conf->handler = ngx_http_uwsgi_cache_purge_handler;
+            conf->handler = ulcf->upstream.cache
+                          ? ngx_http_uwsgi_cache_purge_handler : NULL;
             conf->original_handler = clcf->handler;
 
             clcf->handler = ngx_http_cache_purge_access_handler;

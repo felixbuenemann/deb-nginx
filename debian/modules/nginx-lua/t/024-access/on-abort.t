@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 use t::StapThread;
 
 our $GCScript = <<_EOC_;
@@ -303,7 +303,7 @@ lua req cleanup
 
 --- timeout: 0.2
 --- abort
---- wait: 0.5
+--- wait: 0.6
 --- ignore_response
 --- error_log
 client prematurely closed connection

@@ -1,6 +1,6 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 #worker_connections(1014);
 #master_on();
@@ -9,7 +9,7 @@ use Test::Nginx::Socket;
 
 repeat_each(2);
 
-plan tests => repeat_each() * (blocks() * 2 + 8);
+plan tests => repeat_each() * (blocks() * 2 + 9);
 
 #no_diff();
 #no_long_string();
@@ -123,8 +123,12 @@ pcre JIT compiling result: 1
 --- response_body
 hello
 world
---- error_log
-pcre JIT compiling result: 1
+
+--- grep_error_log eval
+qr/pcre JIT compiling result: \d+/
+
+--- grep_error_log_out eval
+["pcre JIT compiling result: 1\n", ""]
 
 
 
@@ -149,8 +153,12 @@ pcre JIT compiling result: 1
 nil
 nil
 nil
---- error_log
-pcre JIT compiling result: 1
+
+--- grep_error_log eval
+qr/pcre JIT compiling result: \d+/
+
+--- grep_error_log_out eval
+["pcre JIT compiling result: 1\n", ""]
 
 
 
@@ -166,8 +174,12 @@ pcre JIT compiling result: 1
     GET /re
 --- response_body
 done
---- error_log
-pcre JIT compiling result: 1
+
+--- grep_error_log eval
+qr/pcre JIT compiling result: \d+/
+
+--- grep_error_log_out eval
+["pcre JIT compiling result: 1\n", ""]
 
 
 
@@ -188,8 +200,12 @@ pcre JIT compiling result: 1
     GET /re
 --- response_body
 hello
---- error_log
-pcre JIT compiling result: 1
+
+--- grep_error_log eval
+qr/pcre JIT compiling result: \d+/
+
+--- grep_error_log_out eval
+["pcre JIT compiling result: 1\n", ""]
 
 
 
@@ -197,8 +213,8 @@ pcre JIT compiling result: 1
 --- config
     location /re {
         content_by_lua '
-            rc, err = pcall(ngx.re.gmatch, "hello\\nworld", "(abc", "j")
-            if not rc then
+            local m, err = ngx.re.gmatch("hello\\nworld", "(abc", "j")
+            if not m then
                 ngx.say("error: ", err)
                 return
             end
@@ -208,5 +224,7 @@ pcre JIT compiling result: 1
 --- request
     GET /re
 --- response_body
-error: bad argument #2 to '?' (failed to compile regex "(abc": pcre_compile() failed: missing ) in "(abc")
+error: pcre_compile() failed: missing ) in "(abc"
+--- no_error_log
+[error]
 

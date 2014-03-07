@@ -9,14 +9,19 @@ BEGIN {
         $ENV{LD_PRELOAD} = "mockeagain.so $ENV{LD_PRELOAD}";
     }
 
-    $ENV{MOCKEAGAIN} = 'w';
+    if ($ENV{MOCKEAGAIN} eq 'r') {
+        $ENV{MOCKEAGAIN} = 'rw';
+
+    } else {
+        $ENV{MOCKEAGAIN} = 'w';
+    }
 
     $ENV{TEST_NGINX_EVENT_TYPE} = 'poll';
     $ENV{MOCKEAGAIN_WRITE_TIMEOUT_PATTERN} = 'get helloworld';
 }
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 
 repeat_each(2);
 
@@ -42,7 +47,7 @@ __DATA__
     location /t1 {
         rewrite_by_lua '
             local sock = ngx.socket.tcp()
-            local ok, err = sock:connect("www.google.com", 12345)
+            local ok, err = sock:connect("agentzh.org", 12345)
             if not ok then
                 ngx.say("failed to connect: ", err)
                 return
@@ -75,7 +80,7 @@ lua tcp socket connect timed out
         rewrite_by_lua '
             local sock = ngx.socket.tcp()
             sock:settimeout(150)
-            local ok, err = sock:connect("www.google.com", 12345)
+            local ok, err = sock:connect("agentzh.org", 12345)
             if not ok then
                 ngx.say("failed to connect: ", err)
                 return
@@ -105,12 +110,12 @@ lua tcp socket connect timeout: 150
     lua_socket_log_errors off;
     lua_socket_connect_timeout 102ms;
     resolver $TEST_NGINX_RESOLVER;
-    resolver_timeout 1s;
+    #resolver_timeout 1s;
     location /t3 {
         rewrite_by_lua '
             local sock = ngx.socket.tcp()
             sock:settimeout(nil)
-            local ok, err = sock:connect("www.google.com", 12345)
+            local ok, err = sock:connect("agentzh.org", 12345)
             if not ok then
                 ngx.say("failed to connect: ", err)
                 return
@@ -145,7 +150,7 @@ lua tcp socket connect timeout: 102
         rewrite_by_lua '
             local sock = ngx.socket.tcp()
             sock:settimeout(0)
-            local ok, err = sock:connect("www.google.com", 12345)
+            local ok, err = sock:connect("agentzh.org", 12345)
             if not ok then
                 ngx.say("failed to connect: ", err)
                 return
@@ -181,7 +186,7 @@ lua tcp socket connect timeout: 102
         rewrite_by_lua '
             local sock = ngx.socket.tcp()
             sock:settimeout(-1)
-            local ok, err = sock:connect("www.google.com", 12345)
+            local ok, err = sock:connect("agentzh.org", 12345)
             if not ok then
                 ngx.say("failed to connect: ", err)
                 return

@@ -1,7 +1,7 @@
 # vim:set ft= ts=4 sw=4 et fdm=marker:
 
 use lib 'lib';
-use Test::Nginx::Socket;
+use Test::Nginx::Socket::Lua;
 use t::StapThread;
 
 our $GCScript = $t::StapThread::GCScript;
@@ -204,6 +204,7 @@ delete thread 2
 terminate 4: ok
 delete thread 4
 
+--- wait: 0.1
 --- response_body
 1: before thread create
 1: before sleep
