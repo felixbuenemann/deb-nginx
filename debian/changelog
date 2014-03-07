@@ -1,3 +1,9 @@
+nginx (1:1.5.11-1fbu1+ng~precise1) precise; urgency=low
+
+  * New upstream release of NGINX, 1.5.11
+
+ -- Felix Bünemann <Felix.Buenemann@gmail.com>  Tue, 04 Mar 2014 18:26:00 +0100
+
 nginx (1:1.5.10-1fbu1+ng~precise1) precise; urgency=low
 
   * New upstream release of NGINX, 1.5.10
